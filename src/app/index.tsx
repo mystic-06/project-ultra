@@ -1,98 +1,60 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
+import { Link, router } from 'expo-router';
+import { useState } from 'react';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
+import { pulseStyles as styles } from '@/components/training/pulse';
+import { useTraining } from '@/training/provider';
+import { upperStarter } from '@/training/routines';
 
 export default function HomeScreen() {
+  const { training, workout } = useTraining();
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState(false);
+
+  async function start() {
+    setStarting(true);
+    setError(false);
+    try {
+      await training.start(upperStarter);
+      router.push('/workout');
+    } catch {
+      setError(true);
+    } finally {
+      setStarting(false);
+    }
+  }
+
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
-
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
-
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+    <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.muted}>PROJECT ULTRA</Text>
+        <Text style={styles.title}>Ready when you are.</Text>
+        <Text style={styles.muted}>Your training, at your pace.</Text>
+        {workout ? <View style={styles.card}>
+          <Text style={styles.muted}>ACTIVE WORKOUT</Text>
+          <Text style={styles.heading}>{workout.title}</Text>
+          <Text style={styles.muted}>
+            {workout.exercises.flatMap((exercise) => exercise.sets).filter((set) => set.performed).length} sets performed
+          </Text>
+          <Link href="/workout" asChild>
+            <Pressable accessibilityRole="button" style={styles.button}>
+              <Text style={styles.buttonText}>Resume workout</Text>
+            </Pressable>
+          </Link>
+        </View> : <View style={styles.card}>
+          <Text style={styles.muted}>YOUR ROUTINE</Text>
+          <Text style={styles.heading}>{upperStarter.title}</Text>
+          <Text style={styles.muted}>3 exercises · 7 sets</Text>
+          <Text style={styles.muted}>Lat pulldown · Chest press · Overhead press</Text>
+          <Text style={styles.muted}>A weighted subset of UPPER to get started.</Text>
+          <Pressable accessibilityRole="button" accessibilityState={{ disabled: starting }}
+            disabled={starting} onPress={start} style={[styles.button, starting && { opacity: 0.6 }]}>
+            <Text style={styles.buttonText}>{starting ? 'Starting…' : 'Start workout'}</Text>
+          </Pressable>
+          {error && <Text accessibilityLiveRegion="polite" style={styles.error}>Could not start. Your saved data is unchanged. Try again.</Text>}
+        </View>}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
-  },
-});
