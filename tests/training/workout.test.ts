@@ -53,7 +53,7 @@ test('old acknowledgements cannot mark newer input saved and rapid edits recover
   assert.equal(first(await reopen()).load, '45');
 });
 
-test('Retry saves the newest draft after a failure, including edits made during the failed write', async (t) => {
+test('Retry saves the newest draft after repeated failures', async (t) => {
   const { training, control, reopen } = await fixture(t);
   await training.start(upperStarter);
   const id = first(training).id;
@@ -220,4 +220,43 @@ test('explicit uncheck works while incomplete text is being edited', async (t) =
   assert.equal(first(training).status, 'editing');
   const row = first(await reopen());
   assert.deepEqual([row.load, row.reps, row.performed], ['40', '6', false]);
+});
+
+test('clearing reps during a pending check remains incomplete until blur, without a false storage failure', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40', reps: '6' });
+  const hold = control.holdNextCommit();
+  const check = training.setPerformed(id, true);
+  await hold.entered;
+  const clear = training.editSet(id, { reps: '' });
+  hold.release();
+  await check;
+  await clear;
+  assert.equal(first(training).status, 'editing');
+  assert.equal(first(training).reps, '');
+  assert.equal(first(training).performed, true);
+  await training.blurSet(id);
+  const row = first(await reopen());
+  assert.deepEqual([row.load, row.reps, row.performed], ['40', '', false]);
+});
+
+test('a newer edit made during a failing write remains available for Retry', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '35', reps: '6' });
+  const hold = control.holdNextCommit({ fail: true });
+  const older = training.editSet(id, { load: '40' });
+  await hold.entered;
+  const newer = training.editSet(id, { load: '45' });
+  control.failNextCommit();
+  hold.release();
+  assert.equal(await older, false);
+  assert.equal(first(training).load, '45');
+  assert.equal(await newer, false);
+  assert.equal(first(training).status, 'failed');
+  assert.equal(await training.retrySet(id), true);
+  assert.equal(first(await reopen()).load, '45');
 });

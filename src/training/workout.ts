@@ -174,8 +174,7 @@ class TrainingModule implements Training {
     const validReps = reps === '' || (/^\d+$/.test(reps) && Number.isSafeInteger(Number(reps)) && Number(reps) > 0);
     const complete = load !== '' && reps !== '';
     const inputValid = validLoad && validReps;
-    if ((!inputValid && performed !== false) || (performed === true && !complete) ||
-        (performed === undefined && row.performed && !complete)) {
+    if ((!inputValid && performed !== false) || (performed === true && !complete)) {
       row.status = 'editing';
       row.error = 'Enter a nonnegative load (up to 2 decimals) and positive whole reps.';
       this.publish();
@@ -185,6 +184,15 @@ class TrainingModule implements Training {
     row.error = null;
     this.publish();
     return this.enqueue(async () => {
+      // Earlier queued checks/unchecks may have changed confirmation since this edit.
+      if (performed === undefined && row.performed && !complete) {
+        if (row.revision === revision) {
+          row.status = 'editing';
+          row.error = 'Leave the field to mark this incomplete set unfinished.';
+        }
+        this.publish();
+        return false;
+      }
       try {
         await this.transaction(async () => {
           // Clear confirmation first so an intentionally emptied field satisfies the invariant.

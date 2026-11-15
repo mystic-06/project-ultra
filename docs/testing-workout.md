@@ -20,8 +20,10 @@ The first slice supplies a three-exercise, seven-set weighted subset of UPPER: l
 
 Android production-adapter and physical keyboard evidence cannot be replaced by the Node suite. Record device/build details and results when this walkthrough is performed.
 
-Implementation verification on 2026-11-15: all 13 Node SQLite integration tests passed, application and test TypeScript checks passed, Expo lint passed, and an Android production bundle exported successfully. No Android device or `adb` was available, so production-adapter runtime and physical keyboard verification remain outstanding.
+Implementation verification on 2026-11-16: all 15 Node SQLite integration tests passed, application and test TypeScript checks passed, Expo lint passed, and an Android production bundle exported successfully. No Android device or `adb` was available, so production-adapter runtime and physical keyboard verification remain outstanding.
 
 ## Browser development
 
 `metro.config.js` enables SQLite WASM assets and cross-origin isolation headers for the development server. Production web hosting also needs `Cross-Origin-Embedder-Policy: credentialless` and `Cross-Origin-Opener-Policy: same-origin`. Browser SQLite is an additional development surface; the release target is Android.
+
+The optional browser smoke check could not launch the installed Chromium because its system libraries were missing/incompatible. No browser visual or runtime result is claimed.

@@ -32,12 +32,16 @@ export function controlCommits(database: TrainingDatabase) {
     failNextCommit() {
       nextCommit = async () => { throw new Error('Simulated storage failure'); };
     },
-    holdNextCommit() {
+    holdNextCommit({ fail = false } = {}) {
       let release!: () => void;
       let arrived!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
       const entered = new Promise<void>((resolve) => { arrived = resolve; });
-      nextCommit = async () => { arrived(); await held; };
+      nextCommit = async () => {
+        arrived();
+        await held;
+        if (fail) throw new Error('Simulated delayed storage failure');
+      };
       return { entered, release };
     },
   };
