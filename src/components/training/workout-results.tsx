@@ -18,7 +18,7 @@ export function WorkoutResults({ workout, onCheck, disabled = false }: {
     {!workout.exercises.some((exercise) => exercise.sets.some((set) => setResultState(set) === state)) && <Text style={styles.muted}>None</Text>}
     {workout.exercises.map((exercise) => <View key={exercise.id}>
       {exercise.sets.map((set, index) => setResultState(set) !== state ? null : <View key={set.id} style={{ gap: 8, paddingVertical: 8 }}>
-        <Text style={styles.text}>{exercise.name} · Set {index + 1}{set.type === 'warmup' ? ' · Warm-up' : ''}</Text>
+        <Text style={styles.text}>{exercise.name} · Set {index + 1}{set.type === 'warmup' ? ' · Warm-up' : set.type === 'drop' ? ' · Drop set' : ''}</Text>
         <Text style={styles.muted}>{set.load || '—'} kg × {set.reps || '—'} reps</Text>
         <Text style={styles.muted}>{exercise.loadConvention}</Text>
         {['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment) && <Text style={styles.muted}>Equipment: {equipmentName(set.equipmentSetupId, equipmentSetups)}</Text>}

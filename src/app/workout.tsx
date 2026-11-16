@@ -96,7 +96,7 @@ export default function WorkoutScreen() {
 function SetRow({ set, index, exerciseName, training, disabled }: { set: SetEntry; index: number; exerciseName: string; training: Training; disabled: boolean }) {
   const repsInput = useRef<ComponentRef<typeof TextInput>>(null);
   const label = `${exerciseName}, set ${index + 1}`;
-  const target = `${set.targetMin === 0 && set.targetMax === 0 ? 'No rep target' : `${set.targetMin}–${set.targetMax} reps`}${set.type === 'warmup' ? ' · Warm-up' : ''}`;
+  const target = `${set.targetMin === 0 && set.targetMax === 0 ? 'No rep target' : `${set.targetMin}–${set.targetMax} reps`}${set.type === 'warmup' ? ' · Warm-up' : set.type === 'drop' ? ' · Drop set' : ''}`;
   const durability = set.status === 'saving' ? 'Saving…' : set.status === 'failed' ? 'Save failed' : set.status === 'editing' ? 'Incomplete input · not saved' : 'Saved';
   const status = set.inputState === 'incomplete' && set.status !== 'editing'
     ? set.status === 'saved' ? 'Incomplete set · values saved' : `Incomplete set · ${durability.toLowerCase()}`

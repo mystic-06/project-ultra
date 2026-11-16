@@ -7,7 +7,7 @@ import { pulse, pulseStyles as styles } from '@/components/training/pulse';
 import { WorkoutSaveFeedback } from '@/components/training/save-feedback';
 import { useLocalDate } from '@/hooks/use-local-date';
 import { useTraining } from '@/training/provider';
-import { upperStarter, type Routine } from '@/training/routines';
+import type { Routine } from '@/training/routines';
 
 interface StartChoice {
   step: 'choose' | 'confirm';
@@ -17,7 +17,7 @@ interface StartChoice {
 }
 
 export default function HomeScreen() {
-  const { training, workout, history, isEnding, isAdapting } = useTraining();
+  const { training, workout, history, routines, isEnding, isAdapting } = useTraining();
   const busy = isEnding || isAdapting;
   const now = useLocalDate();
   const activity = training.getWeeklyActivity(now);
@@ -27,7 +27,7 @@ export default function HomeScreen() {
   const [error, setError] = useState<string | null>(null);
   const [choice, setChoice] = useState<StartChoice | null>(null);
 
-  async function start(selected: Routine = upperStarter) {
+  async function start(selected: Routine) {
     setStarting(true);
     setError(null);
     try {
@@ -71,20 +71,19 @@ export default function HomeScreen() {
     }
   }
 
-  const routineCard = <View style={[styles.card, !workout && localStyles.hero]}>
-    <Text style={localStyles.eyebrow}>{workout ? 'YOUR ROUTINE' : 'LET’S TRAIN'}</Text>
-    <Text style={styles.heading}>{upperStarter.title}</Text>
-    <Text style={styles.muted}>{upperStarter.exercises.length} exercises · {upperStarter.exercises.reduce((total, exercise) => total + exercise.sets.length, 0)} sets</Text>
-    <Text style={styles.muted}>{upperStarter.exercises.map((exercise) => exercise.name).join(' · ')}</Text>
-    <Pressable accessibilityRole="button" accessibilityState={{ disabled: starting || busy }}
-      disabled={starting || busy} onPress={() => void start()} style={[styles.button, (starting || busy) && { opacity: 0.6 }]}>
-      <Text style={styles.buttonText}>{starting ? 'Starting…' : workout ? 'Start another workout' : 'Start workout'}</Text>
-    </Pressable>
-    <Pressable accessibilityRole="button" disabled={starting || busy} style={localStyles.cancel}
-      onPress={() => void start({ id: 'unplanned', title: 'Workout', exercises: [] })}>
-      <Text style={styles.text}>Start empty workout</Text>
-    </Pressable>
-    {error && !choice && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
+  const routineCard = <View style={localStyles.header}>
+    <View style={styles.card}>
+      <Text accessibilityRole="header" style={styles.heading}>Your routines</Text>
+      <Link href="/routines" asChild><Pressable accessibilityRole="button" style={localStyles.cancel}><Text style={localStyles.open}>Create or edit routines →</Text></Pressable></Link>
+      <Pressable accessibilityRole="button" disabled={starting || busy} style={localStyles.cancel} onPress={() => void start({ id: 'unplanned', title: 'Workout', exercises: [] })}><Text style={styles.text}>Start empty workout</Text></Pressable>
+      {error && !choice && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
+    </View>
+    {routines.map((routine) => <View key={routine.id} style={styles.card}>
+      <Text style={styles.heading}>{routine.title}</Text>
+      <Text style={styles.muted}>{routine.exercises.length} exercises · {routine.exercises.reduce((total, exercise) => total + exercise.sets.length, 0)} sets</Text>
+      <Text style={styles.muted}>{routine.exercises.map((exercise) => exercise.name).join(' · ')}</Text>
+      <Pressable accessibilityRole="button" disabled={starting || busy} onPress={() => void start(routine)} style={styles.button}><Text style={styles.buttonText}>{starting ? 'Starting…' : 'Start workout'}</Text></Pressable>
+    </View>)}
   </View>;
 
   return (

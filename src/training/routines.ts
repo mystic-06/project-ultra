@@ -5,8 +5,9 @@ export interface Routine {
     exerciseId: string;
     name: string;
     loadConvention: string;
+    entryMode?: import('./catalogue').EntryMode;
     restSeconds?: number;
-    sets: { type: 'normal' | 'warmup'; targetMin: number; targetMax: number }[];
+    sets: { type: 'normal' | 'warmup' | 'drop'; targetMin: number; targetMax: number }[];
   }[];
 }
 

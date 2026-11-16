@@ -2,14 +2,14 @@ import { catalogueExercise, searchExercises, type CatalogueExercise, type EntryM
 import { changeWorkout, persistWorkoutStructure, type WorkoutChange } from './workout-changes';
 import type { TrainingDatabase } from './database';
 import { migrate } from './migrations';
-import type { Routine } from './routines';
+import { upperStarter, type Routine } from './routines';
 
 export type SaveStatus = 'editing' | 'saving' | 'saved' | 'failed';
 export interface EquipmentSetup { id: string; label: string | null; gym: string | null; ratio: string | null; archived: boolean }
 export interface SetEntry {
   equipmentSetupId: string | null;
   id: string;
-  type: 'normal' | 'warmup';
+  type: 'normal' | 'warmup' | 'drop';
   targetMin: number;
   targetMax: number;
   load: string;
@@ -43,6 +43,7 @@ export interface RestSettings { automatic: boolean; defaultSeconds: number }
 export interface RestTimer { state: 'idle' | 'running' | 'finished'; deadline: number | null; remainingSeconds: number }
 
 export interface TrainingSnapshot {
+  routines: Routine[]; routineDraft: string | null;
   restSettings: RestSettings; restDeadline: number | null;
   equipmentSetups: EquipmentSetup[]; workout: Workout | null; history: WorkoutSummary[]; isEnding: boolean; isAdapting: boolean;
   saveStatus: SaveStatus; hasIncompleteInput: boolean;
@@ -55,6 +56,10 @@ export interface Training {
   archiveEquipmentSetup(id: string, archived: boolean): Promise<void>;
   selectEquipmentSetup(exerciseId: string, setupId: string | null): Promise<void>;
   correctSetEquipment(setId: string, setupId: string | null): Promise<void>;
+  saveRoutineDraft(data: string): Promise<void>;
+  discardRoutineDraft(): Promise<void>;
+  saveRoutine(routine: Routine): Promise<void>;
+  deleteRoutine(id: string): Promise<void>;
   getWeeklyActivity(at?: number): WeeklyActivity;
   getRestTimer(): RestTimer;
   setRestSettings(settings: RestSettings): Promise<void>;
@@ -93,11 +98,13 @@ export function openTraining(database: TrainingDatabase, now: () => number = Dat
 
 class TrainingModule implements Training {
   private workout: Workout | null = null;
-  private snapshot: TrainingSnapshot = { equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
+  private snapshot: TrainingSnapshot = { routines: [], routineDraft: null, equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
   private history: WorkoutSummary[] = [];
   private restSettings: RestSettings = { automatic: true, defaultSeconds: 90 };
   private restDeadline: number | null = null;
   private equipmentSetups: EquipmentSetup[] = [];
+  private routines: Routine[] = [];
+  private routineDraft: string | null = null;
   private isEnding = false;
   private isAdapting = false;
   private listeners = new Set<() => void>();
@@ -114,6 +121,12 @@ class TrainingModule implements Training {
       const training = new TrainingModule(database, now);
       await training.load();
       await training.loadEquipment();
+      // Seed once; deleting the starter must remain effective after reopening.
+      await training.transaction(async () => {
+        await training.database.run("INSERT OR IGNORE INTO routines(id, data) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM routine_seed)", [upperStarter.id, JSON.stringify(upperStarter)]);
+        await training.database.run("INSERT OR IGNORE INTO routine_seed(id) VALUES (1)", []);
+      });
+      await training.loadRoutines();
       training.history = await training.readHistory();
       training.publish();
       return training;
@@ -121,6 +134,47 @@ class TrainingModule implements Training {
       await database.close();
       throw error;
     }
+  }
+
+  private async loadRoutines() {
+    const rows = await this.database.all<{ data: string }>('SELECT data FROM routines ORDER BY rowid');
+    this.routines = rows.map((row) => JSON.parse(row.data) as Routine);
+    const [draft] = await this.database.all<{ data: string }>('SELECT data FROM routine_draft WHERE id = 1', []);
+    this.routineDraft = draft?.data ?? null;
+  }
+
+  saveRoutineDraft(data: string): Promise<void> {
+    return this.enqueue(async () => {
+      await this.database.run('INSERT OR REPLACE INTO routine_draft(id, data) VALUES (1, ?)', [data]);
+      this.routineDraft = data; this.publish();
+    });
+  }
+  discardRoutineDraft(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.database.run('DELETE FROM routine_draft WHERE id = 1', []);
+      this.routineDraft = null; this.publish();
+    });
+  }
+  saveRoutine(routine: Routine): Promise<void> {
+    if (!routine.id || !routine.title.trim() || routine.exercises.some((e) =>
+      !e.exerciseId || !e.sets.length || (e.restSeconds !== undefined && (!Number.isSafeInteger(e.restSeconds) || e.restSeconds < 0)) ||
+      e.sets.some((set) => !['normal', 'warmup', 'drop'].includes(set.type) || !Number.isSafeInteger(set.targetMin) || !Number.isSafeInteger(set.targetMax) || set.targetMin < 1 || set.targetMax < set.targetMin))) {
+      return Promise.reject(new Error('Enter a name, valid targets and rest duration.'));
+    }
+    const saved = JSON.stringify({ ...routine, title: routine.title.trim() });
+    return this.enqueue(async () => {
+      await this.transaction(async () => {
+        await this.database.run('INSERT INTO routines(id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data', [routine.id, saved]);
+        await this.database.run('DELETE FROM routine_draft WHERE id = 1', []);
+      });
+      await this.loadRoutines(); this.publish();
+    });
+  }
+  deleteRoutine(id: string): Promise<void> {
+    return this.enqueue(async () => {
+      await this.database.run('DELETE FROM routines WHERE id = ?', [id]);
+      await this.loadRoutines(); this.publish();
+    });
   }
 
   getWeeklyActivity(at = this.now()): WeeklyActivity {
@@ -176,7 +230,7 @@ class TrainingModule implements Training {
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     const saveStatus = this.isAdapting ? 'saving' : (['failed', 'saving', 'editing'] as const)
       .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
-    this.snapshot = { equipmentSetups: this.equipmentSetups.map((setup) => ({ ...setup })), restSettings: { ...this.restSettings }, restDeadline: this.restDeadline, history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
+    this.snapshot = { routines: JSON.parse(JSON.stringify(this.routines)), routineDraft: this.routineDraft, equipmentSetups: this.equipmentSetups.map((setup) => ({ ...setup })), restSettings: { ...this.restSettings }, restDeadline: this.restDeadline, history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
         ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
@@ -430,8 +484,8 @@ class TrainingModule implements Training {
     for (const [position, exercise] of routine.exercises.entries()) {
       if (exercise.restSeconds !== undefined && (!Number.isSafeInteger(exercise.restSeconds) || exercise.restSeconds < 1 || exercise.restSeconds > 86400)) throw new Error('Invalid routine rest duration.');
       const exerciseId = `${id}:${position}`;
-      await this.database.run('INSERT INTO workout_exercises(id, workout_id, exercise_id, name, load_convention, position, rest_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [exerciseId, id, exercise.exerciseId, exercise.name, exercise.loadConvention, position, exercise.restSeconds ?? null]);
+      await this.database.run('INSERT INTO workout_exercises(id, workout_id, exercise_id, name, load_convention, position, entry_mode, rest_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [exerciseId, id, exercise.exerciseId, exercise.name, exercise.loadConvention, position, exercise.entryMode ?? 'weighted', exercise.restSeconds ?? null]);
       const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT setup_id FROM equipment_last_selection WHERE exercise_id = ?', [exercise.exerciseId]);
       const equipmentSetupId = selection?.setup_id ?? null;
       await this.database.run('UPDATE workout_exercises SET equipment_setup_id = ? WHERE id = ?', [equipmentSetupId, exerciseId]);
@@ -444,7 +498,7 @@ class TrainingModule implements Training {
         sets.push({ id: setId, equipmentSetupId, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
           load: '', reps: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null });
       }
-      exercises.push({ id: exerciseId, exerciseId: exercise.exerciseId, equipmentSetupId, entryMode: 'weighted', name: exercise.name, loadConvention: exercise.loadConvention, restSeconds: exercise.restSeconds, sets });
+      exercises.push({ id: exerciseId, exerciseId: exercise.exerciseId, equipmentSetupId, entryMode: exercise.entryMode ?? 'weighted', name: exercise.name, loadConvention: exercise.loadConvention, restSeconds: exercise.restSeconds, sets });
     }
     return { id, title: routine.title, startedAt, exercises };
   }

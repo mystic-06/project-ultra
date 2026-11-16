@@ -41,6 +41,24 @@ const migrations = [
   ALTER TABLE workouts ADD COLUMN rest_deadline INTEGER;
   CREATE TABLE rest_settings (id INTEGER PRIMARY KEY CHECK(id = 1), automatic INTEGER NOT NULL, default_seconds INTEGER NOT NULL);
   INSERT INTO rest_settings VALUES (1, 1, 90);`,
+  `  CREATE TABLE routines (id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL);
+  CREATE TABLE routine_seed (id INTEGER PRIMARY KEY CHECK(id = 1));
+  CREATE TABLE routine_draft (id INTEGER PRIMARY KEY CHECK(id = 1), data TEXT NOT NULL);
+  CREATE TABLE workout_sets_new (
+    id TEXT PRIMARY KEY NOT NULL,
+    workout_exercise_id TEXT NOT NULL REFERENCES workout_exercises(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('normal', 'warmup', 'drop')),
+    target_min INTEGER NOT NULL, target_max INTEGER NOT NULL,
+    load TEXT, reps INTEGER CHECK(reps IS NULL OR reps > 0),
+    performed INTEGER NOT NULL DEFAULT 0 CHECK(performed IN (0, 1)),
+    equipment_setup_id TEXT REFERENCES equipment_setups(id),
+    CHECK(performed = 0 OR (load IS NOT NULL AND reps IS NOT NULL)),
+    UNIQUE(workout_exercise_id, position)
+  );
+  INSERT INTO workout_sets_new SELECT * FROM workout_sets;
+  DROP TABLE workout_sets;
+  ALTER TABLE workout_sets_new RENAME TO workout_sets;`,
 ];
 
 export async function migrate(database: TrainingDatabase) {
