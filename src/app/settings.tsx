@@ -5,7 +5,8 @@ import { pulse, pulseStyles } from '@/components/training/pulse';
 import { useTraining } from '@/training/provider';
 
 export default function SettingsScreen() {
-  const { training, restSettings } = useTraining();
+  const { training, restSettings, loadUnit } = useTraining();
+  const [unitError, setUnitError] = useState('');
   const [seconds, setSeconds] = useState(String(restSettings.defaultSeconds));
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -15,6 +16,14 @@ export default function SettingsScreen() {
   }
   return <SafeAreaView style={pulseStyles.screen} edges={['left', 'right', 'bottom']}>
     <ScrollView contentContainerStyle={pulseStyles.content} keyboardShouldPersistTaps="handled">
+      <View style={pulseStyles.card}>
+        <Text style={pulseStyles.heading}>Load unit</Text>
+        <Text style={pulseStyles.muted}>Choose how loads are displayed and entered.</Text>
+        <View style={styles.row}>{(['kg', 'lb'] as const).map((unit) => <Pressable key={unit} accessibilityRole="radio" accessibilityState={{ checked: loadUnit === unit }} style={pulseStyles.button} onPress={() => {
+          void training.setLoadUnit(unit).then(() => { setUnitError(''); }).catch((reason: unknown) => { setUnitError(reason instanceof Error && reason.message.startsWith('Complete or clear') ? reason.message : 'Could not save the unit. Try again.'); });
+        }}><Text style={pulseStyles.buttonText}>{unit === loadUnit ? '✓ ' : ''}{unit}</Text></Pressable>)}</View>
+        {unitError ? <Text accessibilityLiveRegion="polite" style={pulseStyles.error}>{unitError}</Text> : null}
+      </View>
       <View style={pulseStyles.card}>
         <Text style={pulseStyles.heading}>Rest timer</Text>
         <View style={styles.row}><Text style={[pulseStyles.text, styles.label]}>Start automatically after a check</Text>

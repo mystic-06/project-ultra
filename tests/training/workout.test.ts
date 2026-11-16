@@ -120,7 +120,7 @@ test('failed checks roll back, can retry, and valid corrections preserve perform
   assert.equal(first(training).performed, true);
   await training.editSet(id, { load: '42.50', reps: '7' });
   assert.equal(first(training).performed, true);
-  assert.deepEqual([first(await reopen()).load, first(training).reps], ['42.50', '7']);
+  assert.deepEqual([first(await reopen()).load, first(training).reps], ['42.5', '7']);
 });
 
 test('checking during a pending save keeps the check when a newer edit follows', async (t) => {
@@ -409,4 +409,71 @@ test('incomplete entries are identified before checking without misreporting sav
   const recovered = await reopen();
   assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['40', '', false]);
   assert.equal(first(recovered).inputState, 'incomplete');
+});
+
+test('unit changes preserve original measurements through reopen and history', async (t) => {
+  const { training, reopen } = await fixture(t);
+  assert.equal(training.getSnapshot().loadUnit, 'kg');
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40.25', reps: '6' });
+  await training.setPerformed(id, true);
+  await training.setLoadUnit('lb');
+  assert.equal(first(training).load, '88.74');
+  await training.setLoadUnit('kg');
+  assert.equal(first(training).load, '40.25');
+  await training.setLoadUnit('lb');
+  await training.editSet(id, { load: '100' });
+  await training.setLoadUnit('kg');
+  assert.equal(first(training).load, '45.36');
+  const recovered = await reopen();
+  assert.equal(first(recovered).load, '45.36');
+  await recovered.setLoadUnit('lb');
+  assert.equal(first(recovered).load, '100');
+  const workoutId = recovered.getSnapshot().workout!.id;
+  await recovered.finishWorkout(workoutId);
+  await recovered.setLoadUnit('kg');
+  assert.equal((await recovered.getCompletedWorkout(workoutId))!.exercises[0].sets[0].load, '45.36');
+});
+
+test('unit changes wait for queued saves and retry retains the entered unit after failure', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  const held = control.holdNextCommit({ fail: true });
+  const edit = training.editSet(id, { load: '10', reps: '6' });
+  await held.entered;
+  const switchUnit = training.setLoadUnit('lb');
+  held.release();
+  assert.equal(await edit, false);
+  await switchUnit;
+  assert.equal(first(training).load, '22.05');
+  assert.equal(first(training).status, 'failed');
+  assert.equal(await training.retrySet(id), true);
+  const recovered = await reopen();
+  assert.equal(first(recovered).load, '22.05');
+  await recovered.setLoadUnit('kg');
+  assert.equal(first(recovered).load, '10');
+});
+
+test('unfinished load text blocks unit changes without losing the draft', async (t) => {
+  const { training } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40.' });
+  await assert.rejects(training.setLoadUnit('lb'), /Complete or clear/);
+  assert.equal(first(training).load, '40.');
+  assert.equal(training.getSnapshot().loadUnit, 'kg');
+});
+
+test('a failed unit setting keeps the old unit and can be retried', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  await training.editSet(first(training).id, { load: '10', reps: '6' });
+  control.failNextCommit();
+  await assert.rejects(training.setLoadUnit('lb'));
+  assert.equal(first(training).load, '10');
+  assert.equal(training.getSnapshot().loadUnit, 'kg');
+  await training.setLoadUnit('lb');
+  assert.equal(first(await reopen()).load, '22.05');
 });

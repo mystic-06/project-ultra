@@ -4,6 +4,16 @@ import type { TrainingDatabase } from './database';
 import { migrate } from './migrations';
 import { routineFromDraft, upperStarter, validateRoutine, type Routine } from './routines';
 
+export type LoadUnit = 'kg' | 'lb';
+
+/** Convert from the recorded measurement, never from a rounded display value. */
+export function formatLoad(value: string, from: LoadUnit, to: LoadUnit): string {
+  if (value === '') return '';
+  const number = Number(value);
+  const converted = from === to ? number : from === 'lb' ? number * 0.45359237 : number / 0.45359237;
+  return Number(converted.toFixed(2)).toString();
+}
+
 export type SaveStatus = 'editing' | 'saving' | 'saved' | 'failed';
 export interface EquipmentSetup { id: string; label: string | null; gym: string | null; ratio: string | null; archived: boolean }
 export interface SetEntry {
@@ -13,6 +23,8 @@ export interface SetEntry {
   targetMin: number;
   targetMax: number;
   load: string;
+  originalLoad: string;
+  loadUnit: LoadUnit;
   reps: string;
   performed: boolean;
   revision: number;
@@ -44,7 +56,7 @@ export interface RestTimer { state: 'idle' | 'running' | 'finished'; deadline: n
 
 export interface TrainingSnapshot {
   routines: Routine[]; routineDraft: string | null;
-  restSettings: RestSettings; restDeadline: number | null;
+  loadUnit: LoadUnit; restSettings: RestSettings; restDeadline: number | null;
   equipmentSetups: EquipmentSetup[]; workout: Workout | null; history: WorkoutSummary[]; isEnding: boolean; isAdapting: boolean;
   saveStatus: SaveStatus; hasIncompleteInput: boolean;
 }
@@ -63,6 +75,7 @@ export interface Training {
   deleteRoutine(id: string): Promise<void>;
   getWeeklyActivity(at?: number): WeeklyActivity;
   getRestTimer(): RestTimer;
+  setLoadUnit(unit: LoadUnit): Promise<void>;
   setRestSettings(settings: RestSettings): Promise<void>;
   startRest(seconds: number): Promise<void>;
   adjustRest(seconds: number): Promise<void>;
@@ -99,7 +112,8 @@ export function openTraining(database: TrainingDatabase, now: () => number = Dat
 
 class TrainingModule implements Training {
   private workout: Workout | null = null;
-  private snapshot: TrainingSnapshot = { routines: [], routineDraft: null, equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
+  private snapshot: TrainingSnapshot = { routines: [], routineDraft: null, loadUnit: 'kg', equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
+  private loadUnit: LoadUnit = 'kg';
   private history: WorkoutSummary[] = [];
   private restSettings: RestSettings = { automatic: true, defaultSeconds: 90 };
   private restDeadline: number | null = null;
@@ -193,6 +207,19 @@ class TrainingModule implements Training {
     return { deadline: this.restDeadline, remainingSeconds, state: this.restDeadline === null ? 'idle' : remainingSeconds ? 'running' : 'finished' };
   }
 
+  setLoadUnit(unit: LoadUnit): Promise<void> {
+    if (unit !== 'kg' && unit !== 'lb') return Promise.reject(new Error('Invalid load unit.'));
+    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
+    const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
+    if (rows.some((row) => row.load !== '' && !/^\d+(?:\.\d{1,2})?$/.test(row.load))) return Promise.reject(new Error('Complete or clear the unfinished load before changing units.'));
+    this.isAdapting = true; this.publish();
+    return this.enqueue(async () => {
+      await this.transaction(() => this.database.run('UPDATE load_settings SET unit = ? WHERE id = 1', [unit]));
+      this.loadUnit = unit;
+      for (const row of rows) row.load = formatLoad(row.originalLoad, row.loadUnit, unit);
+    }).finally(() => { this.isAdapting = false; this.publish(); });
+  }
+
   setRestSettings(settings: RestSettings): Promise<void> {
     if (!Number.isSafeInteger(settings.defaultSeconds) || settings.defaultSeconds < 1 || settings.defaultSeconds > 86400) return Promise.reject(new Error('Enter a duration from 1 to 86400 seconds.'));
     return this.enqueue(async () => {
@@ -232,7 +259,7 @@ class TrainingModule implements Training {
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     const saveStatus = this.isAdapting ? 'saving' : (['failed', 'saving', 'editing'] as const)
       .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
-    this.snapshot = { routines: JSON.parse(JSON.stringify(this.routines)), routineDraft: this.routineDraft, equipmentSetups: this.equipmentSetups.map((setup) => ({ ...setup })), restSettings: { ...this.restSettings }, restDeadline: this.restDeadline, history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
+    this.snapshot = { loadUnit: this.loadUnit, routines: JSON.parse(JSON.stringify(this.routines)), routineDraft: this.routineDraft, equipmentSetups: this.equipmentSetups.map((setup) => ({ ...setup })), restSettings: { ...this.restSettings }, restDeadline: this.restDeadline, history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
         ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
@@ -262,6 +289,8 @@ class TrainingModule implements Training {
 
   /** Initial hydration only; subsequent reads use the module-owned draft. */
   private async load() {
+    const [loadSettings] = await this.database.all<{ unit: LoadUnit }>('SELECT unit FROM load_settings WHERE id = 1');
+    this.loadUnit = loadSettings.unit;
     const [workout] = await this.database.all<{ id: string; title: string; started_at: number }>(
       'SELECT id, title, started_at FROM workouts WHERE active = 1');
     const [settings] = await this.database.all<{ automatic: number; default_seconds: number }>('SELECT automatic, default_seconds FROM rest_settings WHERE id = 1');
@@ -280,11 +309,11 @@ class TrainingModule implements Training {
     for (const exercise of exercises) {
       const sets = await this.database.all<{
         id: string; type: SetEntry['type']; target_min: number; target_max: number;
-        load: string | null; reps: number | null; performed: number; equipment_setup_id: string | null;
+        load: string | null; load_unit: LoadUnit; reps: number | null; performed: number; equipment_setup_id: string | null;
       }>('SELECT * FROM workout_sets WHERE workout_exercise_id = ? ORDER BY position', [exercise.id]);
       entries.push({ id: exercise.id, exerciseId: exercise.exercise_id, equipmentSetupId: exercise.equipment_setup_id, entryMode: exercise.entry_mode, name: exercise.name, loadConvention: exercise.load_convention, restSeconds: exercise.rest_seconds ?? undefined,
         sets: sets.map((set): SetEntry => ({ id: set.id, equipmentSetupId: set.equipment_setup_id, type: set.type, targetMin: set.target_min,
-          targetMax: set.target_max, load: set.load ?? '', reps: set.reps?.toString() ?? '',
+          targetMax: set.target_max, originalLoad: set.load ?? '', loadUnit: set.load_unit, load: formatLoad(set.load ?? '', set.load_unit, this.loadUnit), reps: set.reps?.toString() ?? '',
           performed: set.performed === 1, revision: 0, status: 'saved',
           inputState: inspectInput(set.load ?? '', set.reps?.toString() ?? '').inputState, error: null })) });
     }
@@ -505,7 +534,7 @@ class TrainingModule implements Training {
           [setId, exerciseId, setPosition, set.type, set.targetMin, set.targetMax]);
         await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE id = ?', [equipmentSetupId, setId]);
         sets.push({ id: setId, equipmentSetupId, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
-          load: '', reps: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null });
+          load: '', originalLoad: '', loadUnit: 'kg', reps: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null });
       }
       exercises.push({ id: exerciseId, exerciseId: exercise.exerciseId, equipmentSetupId, entryMode: exercise.entryMode ?? 'weighted', name: exercise.name, loadConvention: exercise.loadConvention, restSeconds: exercise.restSeconds, sets });
     }
@@ -524,6 +553,10 @@ class TrainingModule implements Training {
     if (!row) return Promise.resolve(false);
     if (!this.supportsEntry(row)) return Promise.resolve(false);
     Object.assign(row, patch);
+    if (patch.load !== undefined && (patch.load === '' || (/^\d+(?:\.\d{1,2})?$/.test(patch.load) && Number.isFinite(Number(patch.load))))) {
+      row.originalLoad = patch.load;
+      row.loadUnit = this.loadUnit;
+    }
     row.inputState = inspectInput(row.load, row.reps).inputState;
     return this.save(row, patch.reps === '' ? false : undefined);
   }
@@ -551,6 +584,7 @@ class TrainingModule implements Training {
     const row = this.row(id);
     if (!row) return Promise.resolve(false);
     if (row.reps === '' || row.load === '') return this.save(row, false);
+    if (inspectInput(row.load, row.reps).inputValid) { row.load = formatLoad(row.originalLoad, row.loadUnit, this.loadUnit); this.publish(); }
     return Promise.resolve(false);
   }
 
@@ -564,7 +598,7 @@ class TrainingModule implements Training {
   private save(row: SetEntry, performed?: boolean): Promise<boolean> {
     if (!this.supportsEntry(row)) return Promise.resolve(false);
     const workoutId = this.workout?.id;
-    const { load, reps } = row;
+    const { load, reps, originalLoad, loadUnit } = row;
     const { inputValid, complete } = inspectInput(load, reps);
     // Checking validates performance; it must not invalidate an existing save acknowledgement.
     if (performed === true && (!inputValid || !complete)) {
@@ -605,8 +639,8 @@ class TrainingModule implements Training {
             await this.database.run('UPDATE workout_sets SET performed = 0 WHERE id = ?', [row.id]);
           }
           if (inputValid) {
-            await this.database.run('UPDATE workout_sets SET load = ?, reps = ? WHERE id = ?',
-              [load === '' ? null : load, reps === '' ? null : Number(reps), row.id]);
+            await this.database.run('UPDATE workout_sets SET load = ?, load_unit = ?, reps = ? WHERE id = ?',
+              [originalLoad === '' ? null : originalLoad, loadUnit, reps === '' ? null : Number(reps), row.id]);
           }
           if (performed !== undefined) {
             await this.database.run('UPDATE workout_sets SET performed = ? WHERE id = ?', [performed ? 1 : 0, row.id]);

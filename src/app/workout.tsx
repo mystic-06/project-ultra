@@ -13,7 +13,7 @@ import { useTraining } from '@/training/provider';
 import type { SetEntry, Training } from '@/training/workout';
 
 export default function WorkoutScreen() {
-  const { training, workout, isEnding, isAdapting, equipmentSetups } = useTraining();
+  const { training, workout, isEnding, isAdapting, equipmentSetups, loadUnit } = useTraining();
   const busy = isEnding || isAdapting;
   const [managing, setManaging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +32,7 @@ export default function WorkoutScreen() {
             <Text style={pulseStyles.heading}>No active workout</Text>
             <Link href="/" style={pulseStyles.text}>Go Home to start a routine</Link>
           </View> : <>
-            <Text style={pulseStyles.muted}>ACTIVE WORKOUT · KG</Text>
+            <Text style={pulseStyles.muted}>ACTIVE WORKOUT · {loadUnit.toUpperCase()}</Text>
             <Text style={pulseStyles.title}>{workout.title}</Text>
             <Text style={pulseStyles.muted}>Enter your numbers. Check a set when performed.</Text>
             <RestTimer />
@@ -51,7 +51,7 @@ export default function WorkoutScreen() {
             {workout.exercises.length === 0 && <Text style={pulseStyles.text}>Your workout is empty. Add an exercise to begin.</Text>}
             {workout.exercises.map((exercise, exerciseIndex) => <View key={exercise.id} style={styles.exercise}>
               <Text style={pulseStyles.heading}>{exercise.name}</Text>
-              <Text style={pulseStyles.muted}>{exercise.loadConvention} · kg</Text>
+              <Text style={pulseStyles.muted}>{exercise.loadConvention} · {loadUnit}</Text>
               {['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment) && <EquipmentSelector training={training} exercise={exercise} setups={equipmentSetups} disabled={busy} />}
               {managing && <EditActions>
                 <EditAction label={`Move ${exercise.name} up`} disabled={busy || exerciseIndex === 0} onPress={() => void apply({ type: 'move-exercise', exerciseId: exercise.id, direction: -1 })} />
@@ -63,13 +63,13 @@ export default function WorkoutScreen() {
               <View style={styles.row} accessibilityElementsHidden>
                 <Text style={[styles.columnLabel, styles.identity]}>Set</Text>
                 <Text style={[styles.columnLabel, styles.previous]}>Previous</Text>
-                <Text style={[styles.columnLabel, styles.input]}>kg</Text>
+                <Text style={[styles.columnLabel, styles.input]}>{loadUnit}</Text>
                 <Text style={[styles.columnLabel, styles.input]}>Reps</Text>
                 <Text style={[styles.columnLabel, styles.check]}>Check</Text>
               </View>
               {exercise.sets.map((set, index) => <View key={set.id}>
                 {exercise.entryMode === 'weighted'
-                  ? <SetRow set={set} index={index} exerciseName={exercise.name} training={training} disabled={busy} />
+                  ? <SetRow set={set} index={index} exerciseName={exercise.name} training={training} loadUnit={loadUnit} disabled={busy} />
                   : <Text style={pulseStyles.text}>Set {index + 1} · Not entered</Text>}
                 {managing && <EditActions>
                   <EditAction label={`Move set ${index + 1} up`} disabled={busy || index === 0} onPress={() => void apply({ type: 'move-set', exerciseId: exercise.id, setId: set.id, direction: -1 })} />
@@ -93,7 +93,7 @@ export default function WorkoutScreen() {
   );
 }
 
-function SetRow({ set, index, exerciseName, training, disabled }: { set: SetEntry; index: number; exerciseName: string; training: Training; disabled: boolean }) {
+function SetRow({ set, index, exerciseName, training, loadUnit, disabled }: { set: SetEntry; index: number; exerciseName: string; training: Training; loadUnit: 'kg' | 'lb'; disabled: boolean }) {
   const repsInput = useRef<ComponentRef<typeof TextInput>>(null);
   const label = `${exerciseName}, set ${index + 1}`;
   const target = `${set.targetMin === 0 && set.targetMax === 0 ? 'No rep target' : `${set.targetMin}–${set.targetMax} reps`}${set.type === 'warmup' ? ' · Warm-up' : set.type === 'drop' ? ' · Drop set' : ''}`;
@@ -107,7 +107,7 @@ function SetRow({ set, index, exerciseName, training, disabled }: { set: SetEntr
       <Text style={[pulseStyles.text, styles.identity]}>{index + 1}</Text>
       <Text style={[pulseStyles.muted, styles.previous]} accessibilityLabel="No previous result">—</Text>
       <TextInput editable={!disabled} style={[styles.input, styles.field]} value={set.load} placeholder="—" placeholderTextColor={pulse.secondary}
-        accessibilityLabel={`${label}, load in kilograms`} keyboardType="decimal-pad" selectTextOnFocus
+        accessibilityLabel={`${label}, load in ${loadUnit === 'kg' ? 'kilograms' : 'pounds'}`} keyboardType="decimal-pad" selectTextOnFocus
         autoCorrect={false} returnKeyType="next" submitBehavior="submit"
         onSubmitEditing={() => repsInput.current?.focus()} onBlur={() => { void training.blurSet(set.id); }}
         onChangeText={(load) => { void training.editSet(set.id, { load }); }} />

@@ -59,6 +59,9 @@ const migrations = [
   INSERT INTO workout_sets_new SELECT * FROM workout_sets;
   DROP TABLE workout_sets;
   ALTER TABLE workout_sets_new RENAME TO workout_sets;`,
+  `ALTER TABLE workout_sets ADD COLUMN load_unit TEXT NOT NULL DEFAULT 'kg' CHECK(load_unit IN ('kg', 'lb'));
+  CREATE TABLE load_settings (id INTEGER PRIMARY KEY CHECK(id = 1), unit TEXT NOT NULL CHECK(unit IN ('kg', 'lb')));
+  INSERT INTO load_settings VALUES (1, 'kg');`,
 ];
 
 export async function migrate(database: TrainingDatabase) {

@@ -13,7 +13,7 @@ export type WorkoutChange =
 
 function blankSet(id: string, template?: SetEntry): SetEntry {
   return { id, equipmentSetupId: template?.equipmentSetupId ?? null, type: template?.type ?? 'normal', targetMin: template?.targetMin ?? 0, targetMax: template?.targetMax ?? 0,
-    load: '', reps: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null };
+    load: '', originalLoad: '', loadUnit: 'kg', reps: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null };
 }
 
 function move<T>(entries: T[], index: number, direction: -1 | 1) {
