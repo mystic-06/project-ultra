@@ -98,8 +98,9 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
       <Modal visible={choice !== null} transparent animationType="fade" onRequestClose={cancel}>
-        <View style={localStyles.backdrop}>
-          <View accessibilityViewIsModal style={[styles.card, localStyles.dialog]}>
+        <SafeAreaView style={localStyles.backdrop}>
+          <View accessibilityViewIsModal style={localStyles.dialog}>
+            <ScrollView contentContainerStyle={styles.card}>
             <Text accessibilityRole="header" style={styles.heading}>
               {choice?.step === 'choose' ? 'A workout is already active' : 'Discard current workout?'}
             </Text>
@@ -125,8 +126,9 @@ export default function HomeScreen() {
                 <Text style={styles.text}>Cancel</Text>
               </Pressable>
             </>}
+            </ScrollView>
           </View>
-        </View>
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
@@ -134,7 +136,7 @@ export default function HomeScreen() {
 
 const localStyles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: '#000000AA', padding: 24, justifyContent: 'center', alignItems: 'center' },
-  dialog: { width: '100%', maxWidth: 480 },
+  dialog: { width: '100%', maxWidth: 480, maxHeight: '100%', flexShrink: 1 },
   discard: { backgroundColor: pulse.error },
   cancel: { minHeight: 48, alignItems: 'center', justifyContent: 'center' },
   progress: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
