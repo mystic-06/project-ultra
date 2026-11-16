@@ -37,6 +37,10 @@ const migrations = [
    CREATE TABLE equipment_last_selection (exercise_id TEXT PRIMARY KEY NOT NULL, setup_id TEXT REFERENCES equipment_setups(id));
    ALTER TABLE workout_exercises ADD COLUMN equipment_setup_id TEXT REFERENCES equipment_setups(id);
    ALTER TABLE workout_sets ADD COLUMN equipment_setup_id TEXT REFERENCES equipment_setups(id);`,
+  `ALTER TABLE workout_exercises ADD COLUMN rest_seconds INTEGER;
+  ALTER TABLE workouts ADD COLUMN rest_deadline INTEGER;
+  CREATE TABLE rest_settings (id INTEGER PRIMARY KEY CHECK(id = 1), automatic INTEGER NOT NULL, default_seconds INTEGER NOT NULL);
+  INSERT INTO rest_settings VALUES (1, 1, 90);`,
 ];
 
 export async function migrate(database: TrainingDatabase) {

@@ -5,6 +5,7 @@ export interface Routine {
     exerciseId: string;
     name: string;
     loadConvention: string;
+    restSeconds?: number;
     sets: { type: 'normal' | 'warmup'; targetMin: number; targetMax: number }[];
   }[];
 }

@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { catalogueExercise } from '@/training/catalogue';
 import { EquipmentSelector } from '@/components/training/equipment-selector';
+import { RestTimer } from '@/components/training/rest-timer';
 import { pulse, pulseStyles } from '@/components/training/pulse';
 import { EditAction, EditActions } from '@/components/training/workout-edit-controls';
 import type { WorkoutChange } from '@/training/workout-changes';
@@ -34,6 +35,7 @@ export default function WorkoutScreen() {
             <Text style={pulseStyles.muted}>ACTIVE WORKOUT · KG</Text>
             <Text style={pulseStyles.title}>{workout.title}</Text>
             <Text style={pulseStyles.muted}>Enter your numbers. Check a set when performed.</Text>
+            <RestTimer />
             <EditActions>
               <EditAction label="Add exercise" disabled={busy} onPress={() => router.push({ pathname: '/exercises', params: { workoutId: workout.id } })} />
               <EditAction label={managing ? 'Done arranging' : 'Arrange exercises and sets'} disabled={busy} onPress={() => setManaging(!managing)} />

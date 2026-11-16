@@ -22,6 +22,7 @@ export default function RootLayout() {
       <View style={{ flex: 1, backgroundColor: pulse.background }}>
         <Stack screenOptions={{ headerStyle: { backgroundColor: pulse.background }, headerTintColor: pulse.text, contentStyle: { backgroundColor: pulse.background } }}>
           <Stack.Screen name="index" options={{ headerShown: false }} />
+          <Stack.Screen name="settings" options={{ title: 'Settings' }} />
           <Stack.Screen name="exercises" options={{ title: 'Offline exercises' }} />
           <Stack.Screen name="finish" options={{ title: 'Finish review' }} />
           <Stack.Screen name="history/[id]" options={{ title: 'Workout results' }} />

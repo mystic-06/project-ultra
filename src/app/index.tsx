@@ -93,6 +93,7 @@ export default function HomeScreen() {
         ListHeaderComponent={<View style={localStyles.header}>
           <View style={localStyles.greeting}>
             <Text style={localStyles.eyebrow}>PROJECT ULTRA</Text>
+            <Link href="./settings" style={styles.text}>Settings</Link>
             <Text accessibilityRole="header" style={styles.title}>{greeting}</Text>
           </View>
           {workout ? <View style={[styles.card, localStyles.hero]}>
