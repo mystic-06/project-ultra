@@ -121,7 +121,7 @@ export function openTraining(database: TrainingDatabase, now: () => number = Dat
 class TrainingModule implements Training {
   private workout: Workout | null = null;
   private uncheckRevision = new Map<string, number>();
-  private pendingChecks = new Set<string>();
+  private pendingChecks = new Map<string, number>();
   private pendingUnchecks = new Map<string, number>();
   private snapshot: TrainingSnapshot = { routines: [], routineDraft: null, loadUnit: 'kg', equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
   private loadUnit: LoadUnit = 'kg';
@@ -624,7 +624,7 @@ class TrainingModule implements Training {
     }
     const revision = ++row.revision;
     if (performed === false) { this.uncheckRevision.set(row.id, revision); this.pendingUnchecks.set(row.id, revision); row.performed = false; }
-    if (performed === true) this.pendingChecks.add(row.id);
+    if (performed === true) this.pendingChecks.set(row.id, (this.pendingChecks.get(row.id) ?? 0) + 1);
     this.retryIntent.set(row.id, performed);
     if (!inputValid && performed !== false) {
       row.status = 'editing';
@@ -636,7 +636,10 @@ class TrainingModule implements Training {
     row.error = null;
     this.publish();
     return this.enqueue(async () => {
-      if (this.workout?.id !== workoutId) return false;
+      if (this.workout?.id !== workoutId) {
+        if (performed === true) this.releasePendingCheck(row.id);
+        return false;
+      }
       try {
         const exercise = this.workout?.exercises.find((entry) => entry.sets.some((set) => set.id === row.id));
         const deadline = performed === true && !row.performed && this.restSettings.automatic
@@ -656,7 +659,7 @@ class TrainingModule implements Training {
           }
         });
         if ((this.pendingUnchecks.get(row.id) ?? Infinity) <= revision) this.pendingUnchecks.delete(row.id);
-        if (performed === true) this.pendingChecks.delete(row.id);
+        if (performed === true) this.releasePendingCheck(row.id);
         if (deadline !== null) this.restDeadline = deadline;
         if (performed !== undefined && (performed === false || (this.uncheckRevision.get(row.id) ?? 0) <= revision)) row.performed = performed;
         if (row.revision === revision) {
@@ -666,12 +669,18 @@ class TrainingModule implements Training {
         this.publish();
         return true;
       } catch {
-        if (performed === true) this.pendingChecks.delete(row.id);
+        if (performed === true) this.releasePendingCheck(row.id);
         if (row.revision === revision) { row.status = 'failed'; row.error = 'Could not save. Your latest input is kept here. Retry to save it.'; }
         this.publish();
         return false;
       }
     });
+  }
+
+  private releasePendingCheck(id: string) {
+    const remaining = (this.pendingChecks.get(id) ?? 1) - 1;
+    if (remaining > 0) this.pendingChecks.set(id, remaining);
+    else this.pendingChecks.delete(id);
   }
 
   close() {

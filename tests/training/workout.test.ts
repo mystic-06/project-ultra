@@ -540,3 +540,26 @@ test('a failed invalid-edit uncheck is retried with the latest corrected values'
   const recovered = await reopen();
   assert.deepEqual([first(recovered).load, first(recovered).performed], ['45', false]);
 });
+
+test('an invalid edit unchecks even when an earlier failed check precedes another pending check', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40', reps: '6' });
+  const firstHold = control.holdNextCommit({ fail: true });
+  const checkA = training.setPerformed(id, true);
+  await firstHold.entered;
+  const secondHold = control.holdNextCommit();
+  const checkB = training.setPerformed(id, true);
+  firstHold.release();
+  assert.equal(await checkA, false);
+  await secondHold.entered;
+  const invalid = training.editSet(id, { reps: '-' });
+  assert.deepEqual([first(training).reps, first(training).performed], ['-', false]);
+  secondHold.release();
+  await checkB;
+  assert.deepEqual([first(training).reps, first(training).performed], ['-', false]);
+  assert.equal(await invalid, true);
+  const recovered = await reopen();
+  assert.deepEqual([first(recovered).reps, first(recovered).performed], ['6', false]);
+});
