@@ -5,10 +5,10 @@ import { useTraining } from '@/training/provider';
 import { pulse, pulseStyles } from './pulse';
 
 export function WorkoutSaveFeedback() {
-  const { training, saveStatus } = useTraining();
+  const { training, saveStatus, hasIncompleteInput } = useTraining();
   const label = {
-    saved: 'Saved',
-    saving: 'Saving…',
+    saved: hasIncompleteInput ? 'Incomplete set · values saved' : 'Saved',
+    saving: hasIncompleteInput ? 'Incomplete set · saving…' : 'Saving…',
     failed: 'Some changes could not be saved',
     editing: 'Incomplete input · not saved',
   }[saveStatus];

@@ -46,7 +46,10 @@ function SetRow({ set, index, exerciseName, training }: { set: SetEntry; index: 
   const repsInput = useRef<ComponentRef<typeof TextInput>>(null);
   const label = `${exerciseName}, set ${index + 1}`;
   const target = `${set.targetMin}–${set.targetMax} reps${set.type === 'warmup' ? ' · Warm-up' : ''}`;
-  const status = set.status === 'saving' ? 'Saving…' : set.status === 'failed' ? 'Save failed' : set.status === 'editing' ? 'Incomplete input · not saved' : 'Saved';
+  const durability = set.status === 'saving' ? 'Saving…' : set.status === 'failed' ? 'Save failed' : set.status === 'editing' ? 'Incomplete input · not saved' : 'Saved';
+  const status = set.inputState === 'incomplete' && set.status !== 'editing'
+    ? set.status === 'saved' ? 'Incomplete set · values saved' : `Incomplete set · ${durability.toLowerCase()}`
+    : durability;
   return <View style={styles.set}>
     <Text style={styles.target}>{target}</Text>
     <View style={styles.row}>

@@ -13,6 +13,7 @@ export interface SetEntry {
   performed: boolean;
   revision: number;
   status: SaveStatus;
+  inputState: 'empty' | 'incomplete' | 'ready';
   error: string | null;
 }
 export interface Workout {
@@ -21,7 +22,7 @@ export interface Workout {
   startedAt: number;
   exercises: { id: string; name: string; loadConvention: string; sets: SetEntry[] }[];
 }
-export interface TrainingSnapshot { workout: Workout | null; saveStatus: SaveStatus }
+export interface TrainingSnapshot { workout: Workout | null; saveStatus: SaveStatus; hasIncompleteInput: boolean }
 
 export interface Training {
   getSnapshot(): TrainingSnapshot;
@@ -36,13 +37,22 @@ export interface Training {
   close(): Promise<void>;
 }
 
+function inspectInput(load: string, reps: string) {
+  const validLoad = load === '' || (/^\d+(?:\.\d{1,2})?$/.test(load) && Number.isFinite(Number(load)));
+  const validReps = reps === '' || (/^\d+$/.test(reps) && Number.isSafeInteger(Number(reps)) && Number(reps) > 0);
+  const inputValid = validLoad && validReps;
+  const complete = inputValid && load !== '' && reps !== '';
+  const inputState: SetEntry['inputState'] = load === '' && reps === '' ? 'empty' : complete ? 'ready' : 'incomplete';
+  return { inputValid, complete, inputState };
+}
+
 export function openTraining(database: TrainingDatabase): Promise<Training> {
   return TrainingModule.open(database);
 }
 
 class TrainingModule implements Training {
   private workout: Workout | null = null;
-  private snapshot: TrainingSnapshot = { workout: null, saveStatus: 'saved' };
+  private snapshot: TrainingSnapshot = { workout: null, saveStatus: 'saved', hasIncompleteInput: false };
   private listeners = new Set<() => void>();
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
@@ -73,7 +83,7 @@ class TrainingModule implements Training {
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     const saveStatus = (['failed', 'saving', 'editing'] as const)
       .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
-    this.snapshot = { saveStatus, workout: this.workout ? {
+    this.snapshot = { saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
         ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
@@ -117,7 +127,8 @@ class TrainingModule implements Training {
       entries.push({ id: exercise.id, name: exercise.name, loadConvention: exercise.load_convention,
         sets: sets.map((set): SetEntry => ({ id: set.id, type: set.type, targetMin: set.target_min,
           targetMax: set.target_max, load: set.load ?? '', reps: set.reps?.toString() ?? '',
-          performed: set.performed === 1, revision: 0, status: 'saved', error: null })) });
+          performed: set.performed === 1, revision: 0, status: 'saved',
+          inputState: inspectInput(set.load ?? '', set.reps?.toString() ?? '').inputState, error: null })) });
     }
     this.workout = { id: workout.id, title: workout.title, startedAt: workout.started_at, exercises: entries };
     this.publish();
@@ -168,7 +179,7 @@ class TrainingModule implements Training {
         await this.database.run('INSERT INTO workout_sets(id, workout_exercise_id, position, type, target_min, target_max) VALUES (?, ?, ?, ?, ?, ?)',
           [setId, exerciseId, setPosition, set.type, set.targetMin, set.targetMax]);
         sets.push({ id: setId, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
-          load: '', reps: '', performed: false, revision: 0, status: 'saved', error: null });
+          load: '', reps: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null });
       }
       exercises.push({ id: exerciseId, name: exercise.name, loadConvention: exercise.loadConvention, sets });
     }
@@ -185,6 +196,7 @@ class TrainingModule implements Training {
   editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps'>>) {
     const row = this.row(id);
     Object.assign(row, patch);
+    row.inputState = inspectInput(row.load, row.reps).inputState;
     return this.save(row, patch.reps === '' ? false : undefined);
   }
 
@@ -210,14 +222,17 @@ class TrainingModule implements Training {
 
   private save(row: SetEntry, performed?: boolean): Promise<boolean> {
     const workoutId = this.workout?.id;
+    const { load, reps } = row;
+    const { inputValid, complete } = inspectInput(load, reps);
+    // Checking validates performance; it must not invalidate an existing save acknowledgement.
+    if (performed === true && (!inputValid || !complete)) {
+      row.error = 'Enter a nonnegative load (up to 2 decimals) and positive whole reps.';
+      this.publish();
+      return Promise.resolve(false);
+    }
     const revision = ++row.revision;
     this.retryIntent.set(row.id, performed);
-    const { load, reps } = row;
-    const validLoad = load === '' || (/^\d+(?:\.\d{1,2})?$/.test(load) && Number.isFinite(Number(load)));
-    const validReps = reps === '' || (/^\d+$/.test(reps) && Number.isSafeInteger(Number(reps)) && Number(reps) > 0);
-    const complete = load !== '' && reps !== '';
-    const inputValid = validLoad && validReps;
-    if ((!inputValid && performed !== false) || (performed === true && !complete)) {
+    if (!inputValid && performed !== false) {
       row.status = 'editing';
       row.error = 'Enter a nonnegative load (up to 2 decimals) and positive whole reps.';
       this.publish();

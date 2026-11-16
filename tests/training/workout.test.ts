@@ -369,3 +369,44 @@ test('failed replacement leaves edits queued during the attempt attached to the 
   assert.equal(recovered.getSnapshot().workout!.id, originalId);
   assert.deepEqual([first(recovered).load, first(recovered).reps], ['45', '7']);
 });
+
+test('an incomplete decimal remains unsaved on blur after older and other-row writes finish', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40', reps: '6' });
+  const hold = control.holdNextCommit();
+  const older = training.editSet(id, { load: '45' });
+  await hold.entered;
+  await training.editSet(id, { load: '45.' });
+  await training.blurSet(id);
+  assert.equal(training.getSnapshot().saveStatus, 'editing');
+  hold.release();
+  await older;
+  const other = training.getSnapshot().workout!.exercises[0].sets[1];
+  await training.editSet(other.id, { load: '50', reps: '7' });
+  assert.deepEqual([first(training).load, first(training).status, training.getSnapshot().saveStatus], ['45.', 'editing', 'editing']);
+  const recovered = await reopen();
+  assert.deepEqual([first(recovered).load, first(recovered).reps], ['45', '6']);
+});
+
+test('incomplete entries are identified before checking without misreporting saved values as unsaved', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  const hold = control.holdNextCommit();
+  const saving = training.editSet(id, { load: '40' });
+  await hold.entered;
+  assert.equal(await training.setPerformed(id, true), false);
+  assert.equal(first(training).status, 'saving');
+  hold.release();
+  await saving;
+  assert.equal(first(training).inputState, 'incomplete');
+  assert.equal(training.getSnapshot().hasIncompleteInput, true);
+  assert.equal(first(training).status, 'saved');
+  assert.equal(await training.setPerformed(id, true), false);
+  assert.equal(first(training).status, 'saved');
+  const recovered = await reopen();
+  assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['40', '', false]);
+  assert.equal(first(recovered).inputState, 'incomplete');
+});

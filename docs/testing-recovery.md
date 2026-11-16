@@ -4,6 +4,8 @@ Issue: [#2](https://github.com/mystic-06/project-ultra/issues/2). The public wor
 
 Home shows the active workout and its save status before the supplied routine. Routine access stays available while training is active. Starting again offers Resume or Discard and start; discard opens a second confirmation naming the current and selected workouts. Cancel, Android Back on either dialog, and Resume do not issue a replacement command. A confirmed replacement commits deletion of the old workout and insertion of the new snapshot in one transaction; only then does the visible workout change. Failure retains the original workout and incomplete draft, with Resume and Retry available.
 
+Completeness and durability are separate: a missing required field shows Incomplete set while typing, with values saved when valid partial values are durable; raw text such as `40.` shows Incomplete input · not saved. An invalid check does not change an existing save acknowledgement.
+
 Every route except Home and Workout has a compact Resume bar; Home has its own Resume card. Both expose workout-wide pending/failed/incomplete/saved status, and failed saves offer Retry of the latest input. The workout screen keeps per-set feedback. Back navigation never finishes or discards training. Incomplete numeric text remains in the root provider's workout module across navigation. Only acknowledged values are guaranteed after relaunch.
 
 ## Automated verification
