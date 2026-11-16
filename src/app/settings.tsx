@@ -17,7 +17,7 @@ export default function SettingsScreen() {
     <ScrollView contentContainerStyle={pulseStyles.content} keyboardShouldPersistTaps="handled">
       <View style={pulseStyles.card}>
         <Text style={pulseStyles.heading}>Rest timer</Text>
-        <View style={styles.row}><Text style={pulseStyles.text}>Start automatically after a check</Text>
+        <View style={styles.row}><Text style={[pulseStyles.text, styles.label]}>Start automatically after a check</Text>
           <Switch accessibilityLabel="Start rest automatically" value={restSettings.automatic} onValueChange={(value) => void save(value, restSettings.defaultSeconds)} />
         </View>
         <Text style={pulseStyles.text}>Default automatic rest (seconds)</Text>
@@ -31,5 +31,6 @@ export default function SettingsScreen() {
 }
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  label: { flex: 1 },
   input: { minHeight: 48, color: pulse.text, backgroundColor: pulse.input, borderRadius: 8, paddingHorizontal: 12, fontSize: 16 },
 });
