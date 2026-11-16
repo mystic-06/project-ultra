@@ -24,6 +24,7 @@ export interface Workout {
 }
 export interface CompletedWorkout extends Workout { completedAt: number }
 export interface WorkoutSummary {
+  exerciseNames: string[];
   id: string; title: string; startedAt: number; completedAt: number; performedSetCount: number;
 }
 export function setResultState(set: SetEntry): 'performed' | 'unfinished' | 'untouched' {
@@ -39,7 +40,10 @@ export interface TrainingSnapshot {
   saveStatus: SaveStatus; hasIncompleteInput: boolean;
 }
 
+export interface WeeklyActivity { startedAt: number; endsAt: number; completedCount: number }
+
 export interface Training {
+  getWeeklyActivity(at?: number): WeeklyActivity;
   getSnapshot(): TrainingSnapshot;
   subscribe(listener: () => void): () => void;
   start(routine: Routine): Promise<boolean>;
@@ -64,8 +68,8 @@ function inspectInput(load: string, reps: string) {
   return { inputValid, complete, inputState };
 }
 
-export function openTraining(database: TrainingDatabase): Promise<Training> {
-  return TrainingModule.open(database);
+export function openTraining(database: TrainingDatabase, now: () => number = Date.now): Promise<Training> {
+  return TrainingModule.open(database, now);
 }
 
 class TrainingModule implements Training {
@@ -79,12 +83,12 @@ class TrainingModule implements Training {
   private closing?: Promise<void>;
   private retryIntent = new Map<string, boolean | undefined>();
 
-  private constructor(private database: TrainingDatabase) {}
+  private constructor(private database: TrainingDatabase, private now: () => number) {}
 
-  static async open(database: TrainingDatabase) {
+  static async open(database: TrainingDatabase, now: () => number) {
     try {
       await migrate(database);
-      const training = new TrainingModule(database);
+      const training = new TrainingModule(database, now);
       await training.load();
       training.history = await training.readHistory();
       training.publish();
@@ -93,6 +97,15 @@ class TrainingModule implements Training {
       await database.close();
       throw error;
     }
+  }
+
+  getWeeklyActivity(at = this.now()): WeeklyActivity {
+    const date = new Date(at);
+    const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate() - (date.getDay() + 6) % 7);
+    const nextMonday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 7);
+    const startedAt = monday.getTime();
+    const endsAt = nextMonday.getTime();
+    return { startedAt, endsAt, completedCount: this.history.filter((entry) => entry.completedAt >= startedAt && entry.completedAt < endsAt).length };
   }
 
   getSnapshot = () => this.snapshot;
@@ -105,7 +118,7 @@ class TrainingModule implements Training {
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     const saveStatus = (['failed', 'saving', 'editing'] as const)
       .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
-    this.snapshot = { history: this.history.map((entry) => ({ ...entry })), isEnding: this.isEnding, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
+    this.snapshot = { history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
         ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
@@ -158,14 +171,24 @@ class TrainingModule implements Training {
     return { id: workout.id, title: workout.title, startedAt: workout.started_at, exercises: entries };
   }
 
-  private readHistory() {
-    return this.database.all<WorkoutSummary>(`SELECT w.id, w.title, w.started_at AS startedAt,
+  private async readHistory() {
+    const summaries = await this.database.all<Omit<WorkoutSummary, 'exerciseNames'>>(`SELECT w.id, w.title, w.started_at AS startedAt,
       w.completed_at AS completedAt, COUNT(CASE WHEN s.performed = 1 THEN 1 END) AS performedSetCount
       FROM workouts w
       LEFT JOIN workout_exercises e ON e.workout_id = w.id
       LEFT JOIN workout_sets s ON s.workout_exercise_id = e.id
       WHERE w.active = 0 AND w.completed_at IS NOT NULL
       GROUP BY w.id ORDER BY w.completed_at DESC, w.id DESC`);
+    const exercises = await this.database.all<{ workout_id: string; name: string }>(
+      `SELECT e.workout_id, e.name FROM workout_exercises e JOIN workouts w ON w.id = e.workout_id
+       WHERE w.active = 0 AND w.completed_at IS NOT NULL ORDER BY e.workout_id, e.position`);
+    const names = new Map<string, string[]>();
+    for (const exercise of exercises) {
+      const list = names.get(exercise.workout_id) ?? [];
+      list.push(exercise.name);
+      names.set(exercise.workout_id, list);
+    }
+    return summaries.map((summary) => ({ ...summary, exerciseNames: names.get(summary.id) ?? [] }));
   }
 
   getCompletedWorkout(id: string): Promise<CompletedWorkout | null> {
@@ -197,7 +220,7 @@ class TrainingModule implements Training {
         if (rows.some((row) => row.status !== 'saved')) throw new Error('Save or correct your latest entries before finishing.');
         if (!rows.some((row) => row.performed)) throw new Error('No performed sets. Keep training or discard this workout.');
       }
-      const completedAt = Date.now();
+      const completedAt = this.now();
       await this.transaction(async () => {
         const [active] = await this.database.all<{ id: string }>('SELECT id FROM workouts WHERE active = 1');
         if (active?.id !== expectedWorkoutId) throw new Error('The active workout changed.');
@@ -205,7 +228,7 @@ class TrainingModule implements Training {
         else await this.database.run('UPDATE workouts SET active = 0, completed_at = ? WHERE id = ? AND active = 1', [completedAt, expectedWorkoutId]);
       });
       if (!discard) this.history = [{ id: workout.id, title: workout.title, startedAt: workout.startedAt,
-        completedAt, performedSetCount: summarizeWorkout(workout).performed }, ...this.history];
+        completedAt, exerciseNames: workout.exercises.map((exercise) => exercise.name), performedSetCount: summarizeWorkout(workout).performed }, ...this.history];
       this.workout = null;
       this.retryIntent.clear();
     }).finally(() => { this.isEnding = false; this.publish(); });
@@ -244,7 +267,7 @@ class TrainingModule implements Training {
 
   private async insertWorkout(routine: Routine): Promise<Workout> {
     const [{ id }] = await this.database.all<{ id: string }>('SELECT lower(hex(randomblob(16))) AS id');
-    const startedAt = Date.now();
+    const startedAt = this.now();
     await this.database.run('INSERT INTO workouts(id, routine_id, title, started_at, active) VALUES (?, ?, ?, ?, 1)',
       [id, routine.id, routine.title, startedAt]);
     const exercises: Workout['exercises'] = [];
