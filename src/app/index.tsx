@@ -119,7 +119,7 @@ export default function HomeScreen() {
           <Text style={styles.muted}>Completed sessions will appear here. Start the routine above whenever you’re ready.</Text>
         </View>}
         renderItem={({ item: entry }) => <Link href={{ pathname: '/history/[id]', params: { id: entry.id } }} asChild>
-          <Pressable accessibilityRole="button" style={[styles.card, localStyles.historyEntry]}>
+          <Pressable accessibilityRole="button" style={StyleSheet.flatten([styles.card, localStyles.historyEntry])}>
             <Text style={localStyles.eyebrow}>{new Date(entry.startedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</Text>
             <Text style={styles.heading}>{entry.title}</Text>
             <Text style={styles.text}>{Math.max(0, Math.round((entry.completedAt - entry.startedAt) / 60000))} min · {entry.performedSetCount} performed sets</Text>

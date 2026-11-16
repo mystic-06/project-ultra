@@ -14,7 +14,7 @@ Migration 3 adds the snapshotted entry mode, defaulting existing weighted starte
 
 Run `npm test`, `npx tsc --noEmit`, and `npx expo lint` using Node 22.22.1. Nine public-module tests in `tests/training/adapt.test.ts` exercise isolated real SQLite and fresh-module reopening: catalogue coverage/no-results, empty start/add, all structural operations, routine independence, unavailable entry modes, rollback preserving raw drafts/checks, ordering behind a queued check, acknowledgement timing, stale IDs, removing everything/rebuilding, and late input/blur events. The existing durability, process-exit, Home and finish tests remain enabled.
 
-## Android walkthrough — pending
+## Android walkthrough
 
 1. In airplane mode, Start empty workout. Confirm it is resumable with no exercises. Open Add exercise; search `bench barbell`, mixed case, an export name, and a nonexistent name. Verify useful results and a clear no-results message.
 2. Add Bench press, log/check a set and wait for Saved. Add another exercise. Enable Arrange, move the exercises and sets up/down, add sets, reset a row, remove a set, and remove an exercise. Test Cancel and Confirm for each destructive action.
@@ -24,3 +24,5 @@ Run `npm test`, `npx tsc --noEmit`, and `npx expo lint` using Node 22.22.1. Nine
 6. Select a bodyweight, assisted or unilateral entry and verify its unavailable logging message. Arrange/remove it; do not treat it as a weighted bilateral result.
 7. Enter incomplete load text (`40.`), rearrange the exercise or another set and verify the raw text remains. Relaunch should recover only the earlier acknowledged load. Inject a failed structural commit at the development persistence seam; verify the old workout remains, then repeat the action successfully.
 8. Check Android Back, search keyboard behavior, large text, touch comfort, scroll reachability and screen-reader labels on a small device. Host SQLite tests and production export do not prove native interaction or production-adapter recovery.
+
+Owner verification on 2026-11-16: confirmed the conversation’s Android checklist works after aligning Expo SDK 58 packages and flattening the Home history-link child style. Reported device: Android 16, Expo Go client 58.0.5. Failure/delay injection remains automated evidence; no manual injection result is claimed.
