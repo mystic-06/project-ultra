@@ -362,7 +362,14 @@ class TrainingModule implements Training {
     return this.enqueue(async () => {
       const clean = (value: string | null) => value?.trim() || null;
       const [{ id }] = await this.database.all<{ id: string }>('SELECT lower(hex(randomblob(16))) AS id');
-      const setup = { id, label: clean(input.label), gym: clean(input.gym), ratio: clean(input.ratio), archived: false };
+      let label = clean(input.label);
+      if (label === null) {
+        const used = new Set(this.equipmentSetups.map((item) => item.label?.toLowerCase()));
+        let number = 1;
+        while (used.has(`equipment ${number}`)) number++;
+        label = `Equipment ${number}`;
+      }
+      const setup = { id, label, gym: clean(input.gym), ratio: clean(input.ratio), archived: false };
       await this.database.run('INSERT INTO equipment_setups(id, label, gym, ratio) VALUES (?, ?, ?, ?)', [id, setup.label, setup.gym, setup.ratio]);
       this.equipmentSetups.push(setup); this.publish(); return { ...setup };
     });
@@ -429,7 +436,7 @@ class TrainingModule implements Training {
         });
         for (const exercise of result.exercises) {
           if (!previous.exercises.some((item) => item.id === exercise.id)) {
-            const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT setup_id FROM equipment_last_selection WHERE exercise_id = ?', [exercise.exerciseId]);
+            const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT l.setup_id FROM equipment_last_selection l LEFT JOIN equipment_setups s ON s.id = l.setup_id WHERE l.exercise_id = ? AND (l.setup_id IS NULL OR s.archived = 0)', [exercise.exerciseId]);
             exercise.equipmentSetupId = selection?.setup_id ?? null;
             exercise.sets.forEach((set) => { set.equipmentSetupId = exercise.equipmentSetupId; });
           }
@@ -486,7 +493,7 @@ class TrainingModule implements Training {
       const exerciseId = `${id}:${position}`;
       await this.database.run('INSERT INTO workout_exercises(id, workout_id, exercise_id, name, load_convention, position, entry_mode, rest_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         [exerciseId, id, exercise.exerciseId, exercise.name, exercise.loadConvention, position, exercise.entryMode ?? 'weighted', exercise.restSeconds ?? null]);
-      const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT setup_id FROM equipment_last_selection WHERE exercise_id = ?', [exercise.exerciseId]);
+      const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT l.setup_id FROM equipment_last_selection l LEFT JOIN equipment_setups s ON s.id = l.setup_id WHERE l.exercise_id = ? AND (l.setup_id IS NULL OR s.archived = 0)', [exercise.exerciseId]);
       const equipmentSetupId = selection?.setup_id ?? null;
       await this.database.run('UPDATE workout_exercises SET equipment_setup_id = ? WHERE id = ?', [equipmentSetupId, exerciseId]);
       const sets: SetEntry[] = [];

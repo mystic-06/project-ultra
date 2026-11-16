@@ -88,3 +88,49 @@ test('switch waits for a pending check and a failed switch leaves assignments an
   training = await openTraining(await openNodeDatabase(path));
   assert.deepEqual(training.getSnapshot().workout!.exercises[0].sets.slice(0, 2).map((s) => s.equipmentSetupId), [null, setup.id]);
 });
+
+test('unnamed equipment setups receive distinct durable labels while supplied labels remain unchanged', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ultra-equipment-'));
+  const path = join(directory, 'training.db');
+  let training = await openTraining(await openNodeDatabase(path));
+  t.after(async () => { await training.close(); await rm(directory, { recursive: true, force: true }); });
+  const first = await training.createEquipmentSetup({ label: null, gym: null, ratio: null });
+  const second = await training.createEquipmentSetup({ label: '  ', gym: null, ratio: null });
+  const named = await training.createEquipmentSetup({ label: 'Cable tower', gym: null, ratio: null });
+  assert.ok(first.label);
+  assert.ok(second.label);
+  assert.notEqual(first.label, second.label);
+  assert.equal(named.label, 'Cable tower');
+  await training.close();
+  training = await openTraining(await openNodeDatabase(path));
+  assert.deepEqual(training.getSnapshot().equipmentSetups.map((s) => [s.id, s.label]), [[first.id, first.label], [second.id, second.label], [named.id, 'Cable tower']]);
+});
+
+test('archived remembered equipment is excluded from new occurrences until restored', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ultra-equipment-'));
+  const path = join(directory, 'training.db');
+  let training = await openTraining(await openNodeDatabase(path));
+  t.after(async () => { await training.close(); await rm(directory, { recursive: true, force: true }); });
+  await training.start();
+  const workout = training.getSnapshot().workout!;
+  await training.adaptWorkout(workout.id, { type: 'add-exercise', catalogueId: 'lat-pulldown' });
+  const first = training.getSnapshot().workout!.exercises[0];
+  const setup = await training.createEquipmentSetup({ label: 'Tower', gym: null, ratio: null });
+  await training.selectEquipmentSetup(first.id, setup.id);
+  await training.archiveEquipmentSetup(setup.id, true);
+  await training.adaptWorkout(workout.id, { type: 'add-exercise', catalogueId: 'lat-pulldown' });
+  assert.equal(training.getSnapshot().workout!.exercises[1].sets[0].equipmentSetupId, null);
+  await training.close();
+  training = await openTraining(await openNodeDatabase(path));
+  assert.equal(training.getSnapshot().workout!.exercises[0].sets[0].equipmentSetupId, setup.id);
+  assert.equal(training.getSnapshot().workout!.exercises[1].sets[0].equipmentSetupId, null);
+  await training.archiveEquipmentSetup(setup.id, false);
+  await training.adaptWorkout(workout.id, { type: 'add-exercise', catalogueId: 'lat-pulldown' });
+  assert.equal(training.getSnapshot().workout!.exercises[2].sets[0].equipmentSetupId, setup.id);
+  await training.discardWorkout(workout.id);
+  await training.archiveEquipmentSetup(setup.id, true);
+  await training.start(upperStarter);
+  await training.close();
+  training = await openTraining(await openNodeDatabase(path));
+  assert.equal(training.getSnapshot().workout!.exercises[0].sets[0].equipmentSetupId, null);
+});

@@ -17,6 +17,7 @@ export function EquipmentSelector({ training, exercise, setups, disabled }: { tr
   const [gym, setGym] = useState('');
   const [ratio, setRatio] = useState('');
   const [error, setError] = useState('');
+  const hasMixedEquipment = new Set(exercise.sets.map((set) => set.equipmentSetupId)).size > 1;
   const run = async (action: () => Promise<unknown>) => {
     setError('');
     try { await action(); } catch { setError('Could not save equipment. Please try again.'); }
@@ -29,9 +30,9 @@ export function EquipmentSelector({ training, exercise, setups, disabled }: { tr
   return <View style={{ gap: 8 }}>
     <Text style={pulseStyles.text}>Equipment: {equipmentName(exercise.equipmentSetupId, setups)}</Text>
     <EditAction label={open ? 'Close equipment' : 'Change equipment'} disabled={disabled} onPress={() => { setCorrecting(null); setOpen(!open); }} />
-    {new Set(exercise.sets.map((set) => set.equipmentSetupId)).size > 1 && <Text style={pulseStyles.muted}>Sets use different equipment.</Text>}
+    {hasMixedEquipment && <Text style={pulseStyles.muted}>Sets use different equipment.</Text>}
     {exercise.sets.map((set, index) => <View key={set.id}>
-      {(set.performed || new Set(exercise.sets.map((row) => row.equipmentSetupId)).size > 1) && <Text style={pulseStyles.muted}>Set {index + 1}: {equipmentName(set.equipmentSetupId, setups)}</Text>}
+      {(set.performed || hasMixedEquipment) && <Text style={pulseStyles.muted}>Set {index + 1}: {equipmentName(set.equipmentSetupId, setups)}</Text>}
       {set.performed && <EditAction label={`Correct equipment for set ${index + 1}`} disabled={disabled} onPress={() => { setCorrecting(set.id); setOpen(true); }} />}
     </View>)}
     {open && <View style={pulseStyles.card}>
