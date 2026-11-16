@@ -77,6 +77,29 @@ const migrations = [
     SELECT id, workout_exercise_id, position, type, target_min, target_max, load, load_unit, reps, performed, equipment_setup_id FROM workout_sets;
   DROP TABLE workout_sets;
   ALTER TABLE workout_sets_new RENAME TO workout_sets;`,
+  `CREATE TABLE bodyweight_settings (id INTEGER PRIMARY KEY CHECK(id = 1), bodyweight TEXT, bodyweight_unit TEXT NOT NULL DEFAULT 'kg', writeback INTEGER NOT NULL DEFAULT 0, setup_complete INTEGER NOT NULL DEFAULT 0);
+  INSERT INTO bodyweight_settings(id) VALUES (1);
+  CREATE TABLE exercise_fractions (exercise_id TEXT PRIMARY KEY, fraction REAL CHECK(fraction IS NULL OR (fraction >= 0 AND fraction <= 1)));
+  ALTER TABLE workouts ADD COLUMN bodyweight TEXT;
+  ALTER TABLE workouts ADD COLUMN bodyweight_unit TEXT NOT NULL DEFAULT 'kg';
+  ALTER TABLE workout_exercises ADD COLUMN bodyweight TEXT;
+  ALTER TABLE workout_exercises ADD COLUMN bodyweight_unit TEXT NOT NULL DEFAULT 'kg';
+  ALTER TABLE workout_exercises ADD COLUMN bodyweight_fraction REAL;
+  CREATE TABLE workout_sets_new (
+    id TEXT PRIMARY KEY NOT NULL, workout_exercise_id TEXT NOT NULL REFERENCES workout_exercises(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL, type TEXT NOT NULL CHECK(type IN ('normal', 'warmup', 'drop')),
+    target_min INTEGER NOT NULL, target_max INTEGER NOT NULL, load TEXT,
+    load_unit TEXT NOT NULL DEFAULT 'kg' CHECK(load_unit IN ('kg', 'lb')),
+    reps INTEGER CHECK(reps IS NULL OR reps > 0), reps_left INTEGER CHECK(reps_left IS NULL OR reps_left >= 0),
+    reps_right INTEGER CHECK(reps_right IS NULL OR reps_right >= 0), rpe TEXT,
+    performed INTEGER NOT NULL DEFAULT 0 CHECK(performed IN (0, 1)), equipment_setup_id TEXT REFERENCES equipment_setups(id),
+    bodyweight TEXT, bodyweight_unit TEXT NOT NULL DEFAULT 'kg', bodyweight_fraction REAL, bodyweight_load REAL,
+    CHECK(performed = 0 OR (reps IS NOT NULL OR COALESCE(reps_left, 0) > 0 OR COALESCE(reps_right, 0) > 0)), UNIQUE(workout_exercise_id, position)
+  );
+  INSERT INTO workout_sets_new(id, workout_exercise_id, position, type, target_min, target_max, load, load_unit, reps, reps_left, reps_right, rpe, performed, equipment_setup_id)
+    SELECT id, workout_exercise_id, position, type, target_min, target_max, load, load_unit, reps, reps_left, reps_right, rpe, performed, equipment_setup_id FROM workout_sets;
+  DROP TABLE workout_sets;
+  ALTER TABLE workout_sets_new RENAME TO workout_sets;`,
 ];
 
 export async function migrate(database: TrainingDatabase) {

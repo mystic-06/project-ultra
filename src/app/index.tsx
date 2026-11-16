@@ -4,6 +4,7 @@ import { ActivityIndicator, FlatList, Modal, Pressable, ScrollView, StyleSheet, 
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { pulse, pulseStyles as styles } from '@/components/training/pulse';
+import { BodyweightSettings } from '@/components/training/bodyweight-settings';
 import { WorkoutSaveFeedback } from '@/components/training/save-feedback';
 import { useLocalDate } from '@/hooks/use-local-date';
 import { useTraining } from '@/training/provider';
@@ -17,7 +18,7 @@ interface StartChoice {
 }
 
 export default function HomeScreen() {
-  const { training, workout, history, routines, isEnding, isAdapting } = useTraining();
+  const { training, workout, history, routines, isEnding, isAdapting, bodyweightSettings } = useTraining();
   const busy = isEnding || isAdapting;
   const now = useLocalDate();
   const activity = training.getWeeklyActivity(now);
@@ -75,14 +76,14 @@ export default function HomeScreen() {
     <View style={styles.card}>
       <Text accessibilityRole="header" style={styles.heading}>Your routines</Text>
       <Link href="/routines" asChild><Pressable accessibilityRole="button" style={localStyles.cancel}><Text style={localStyles.open}>Create or edit routines →</Text></Pressable></Link>
-      <Pressable accessibilityRole="button" disabled={starting || busy} style={localStyles.cancel} onPress={() => void start({ id: 'unplanned', title: 'Workout', exercises: [] })}><Text style={styles.text}>Start empty workout</Text></Pressable>
+      <Pressable accessibilityRole="button" disabled={starting || busy || !bodyweightSettings.setupComplete} style={localStyles.cancel} onPress={() => void start({ id: 'unplanned', title: 'Workout', exercises: [] })}><Text style={styles.text}>Start empty workout</Text></Pressable>
       {error && !choice && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
     </View>
     {routines.map((routine) => <View key={routine.id} style={styles.card}>
       <Text style={styles.heading}>{routine.title}</Text>
       <Text style={styles.muted}>{routine.exercises.length} exercises · {routine.exercises.reduce((total, exercise) => total + exercise.sets.length, 0)} sets</Text>
       <Text style={styles.muted}>{routine.exercises.map((exercise) => exercise.name).join(' · ')}</Text>
-      <Pressable accessibilityRole="button" disabled={starting || busy} onPress={() => void start(routine)} style={styles.button}><Text style={styles.buttonText}>{starting ? 'Starting…' : 'Start workout'}</Text></Pressable>
+      <Pressable accessibilityRole="button" disabled={starting || busy || !bodyweightSettings.setupComplete} onPress={() => void start(routine)} style={styles.button}><Text style={styles.buttonText}>{starting ? 'Starting…' : 'Start workout'}</Text></Pressable>
     </View>)}
   </View>;
 
@@ -95,6 +96,7 @@ export default function HomeScreen() {
             <Link href="./settings" style={styles.text}>Settings</Link>
             <Text accessibilityRole="header" style={styles.title}>{greeting}</Text>
           </View>
+          {!bodyweightSettings.setupComplete && <BodyweightSettings setup />}
           {workout ? <View style={[styles.card, localStyles.hero]}>
             <Text style={localStyles.eyebrow}>IN PROGRESS</Text>
             <Text style={styles.heading}>{workout.title}</Text>

@@ -1,3 +1,4 @@
+import { formatLoad } from '@/training/workout';
 import { Link, router } from 'expo-router';
 import { useState, useRef, type ComponentRef } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -59,16 +60,17 @@ export default function WorkoutScreen() {
                 <EditAction label={`Replace ${exercise.name}`} disabled={busy} onPress={() => router.push({ pathname: '/exercises', params: { workoutId: workout.id, replaceId: exercise.id } })} />
                 <EditAction label={`Remove ${exercise.name}`} disabled={busy} onPress={() => setConfirmation({ label: `Remove ${exercise.name}`, change: { type: 'remove-exercise', exerciseId: exercise.id } })} />
               </EditActions>}
-              {!['weighted', 'unilateral'].includes(exercise.entryMode) && <Text style={pulseStyles.muted}>{exercise.entryMode} logging is not available yet. You can arrange this exercise and its sets.</Text>}
+              {exercise.entryMode === 'bodyweight' && <BodyweightDetails exercise={exercise} training={training} disabled={busy} loadUnit={loadUnit} />}
+              {!['weighted', 'unilateral', 'bodyweight'].includes(exercise.entryMode) && <Text style={pulseStyles.muted}>{exercise.entryMode} logging is not available yet. You can arrange this exercise and its sets.</Text>}
               <View style={styles.row} accessibilityElementsHidden>
                 <Text style={[styles.columnLabel, styles.identity]}>Set</Text>
                 <Text style={[styles.columnLabel, styles.previous]}>Previous</Text>
-                <Text style={[styles.columnLabel, styles.input]}>{loadUnit}</Text>
+                <Text style={[styles.columnLabel, styles.input]}>{exercise.entryMode === 'bodyweight' ? `Added ${loadUnit}` : loadUnit}</Text>
                 <Text style={[styles.columnLabel, styles.input]}>Reps</Text>
                 <Text style={[styles.columnLabel, styles.check]}>Check</Text>
               </View>
               {exercise.sets.map((set, index) => <View key={set.id}>
-                {['weighted', 'unilateral'].includes(exercise.entryMode)
+                {['weighted', 'unilateral', 'bodyweight'].includes(exercise.entryMode)
                   ? <SetRow unilateral={exercise.entryMode === 'unilateral'} set={set} index={index} exerciseName={exercise.name} training={training} loadUnit={loadUnit} disabled={busy} />
                   : <Text style={pulseStyles.text}>Set {index + 1} · Not entered</Text>}
                 {managing && <EditActions>
@@ -91,6 +93,33 @@ export default function WorkoutScreen() {
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
+}
+
+function BodyweightDetails({ exercise, training, disabled, loadUnit }: { exercise: NonNullable<ReturnType<Training['getSnapshot']>['workout']>['exercises'][number]; training: Training; disabled: boolean; loadUnit: 'kg' | 'lb' }) {
+  const [open, setOpen] = useState(false);
+  const [weight, setWeight] = useState(formatLoad(exercise.bodyweight ?? '', exercise.bodyweightUnit, loadUnit));
+  const [fraction, setFraction] = useState(exercise.bodyweightFraction?.toString() ?? '');
+  const [error, setError] = useState('');
+  const baseline = useRef({ weight, fraction });
+  async function save() {
+    if (fraction !== '' && (!Number.isFinite(Number(fraction)) || Number(fraction) < 0 || Number(fraction) > 1)) { setError('Enter a fraction from 0 to 1, or leave it blank.'); return; }
+    try { await training.setBodyweightDetails(exercise.id, { bodyweight: weight !== baseline.current.weight ? weight || null : undefined, fraction: fraction !== baseline.current.fraction ? (fraction === '' ? null : Number(fraction)) : undefined }); setError(''); setOpen(false); }
+    catch { setError('Could not save. Enter a positive bodyweight and a fraction from 0 to 1.'); }
+  }
+  const calculated = exercise.bodyweight !== null && exercise.bodyweightFraction !== null ? Number(exercise.bodyweight) * exercise.bodyweightFraction : null;
+  return <View style={{ gap: 8 }}>
+    <Text style={pulseStyles.muted}>Bodyweight: {exercise.bodyweight === null ? 'not entered' : `${formatLoad(exercise.bodyweight, exercise.bodyweightUnit, loadUnit)} ${loadUnit}`} · Fraction: {exercise.bodyweightFraction ?? 'unset'}</Text>
+    <Text style={pulseStyles.text}>Calculated bodyweight load: {calculated === null ? '—' : `${formatLoad(String(calculated), exercise.bodyweightUnit, loadUnit)} ${loadUnit}`}</Text>
+    <EditAction label={open ? 'Close exercise details' : 'Exercise details / Add bodyweight'} disabled={disabled} onPress={() => { if (!open) { const nextWeight = formatLoad(exercise.bodyweight ?? '', exercise.bodyweightUnit, loadUnit); const nextFraction = exercise.bodyweightFraction?.toString() ?? ''; baseline.current = { weight: nextWeight, fraction: nextFraction }; setWeight(nextWeight); setFraction(nextFraction); setError(''); } setOpen(!open); }} />
+    {open && <View style={{ gap: 8 }}>
+      <Text style={pulseStyles.muted}>Bodyweight ({loadUnit}), optional</Text>
+      <TextInput accessibilityLabel={`${exercise.name} bodyweight in ${loadUnit}`} value={weight} onChangeText={setWeight} keyboardType="decimal-pad" style={[styles.field, { textAlign: 'left' }]} />
+      <Text style={pulseStyles.muted}>Exercise fraction (0–1), optional</Text>
+      <TextInput accessibilityLabel={`${exercise.name} bodyweight fraction`} value={fraction} onChangeText={setFraction} keyboardType="decimal-pad" style={[styles.field, { textAlign: 'left' }]} />
+      <EditAction label="Save exercise details" disabled={disabled} onPress={() => void save()} />
+      {!!error && <Text style={pulseStyles.error}>{error}</Text>}
+    </View>}
+  </View>;
 }
 
 function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilateral }: { set: SetEntry; index: number; exerciseName: string; training: Training; loadUnit: 'kg' | 'lb'; disabled: boolean; unilateral: boolean }) {

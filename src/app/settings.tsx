@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, Switch, Text, TextInput, View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { BodyweightSettings } from '@/components/training/bodyweight-settings';
 import { pulse, pulseStyles } from '@/components/training/pulse';
 import { useTraining } from '@/training/provider';
 
@@ -16,6 +17,7 @@ export default function SettingsScreen() {
   }
   return <SafeAreaView style={pulseStyles.screen} edges={['left', 'right', 'bottom']}>
     <ScrollView contentContainerStyle={pulseStyles.content} keyboardShouldPersistTaps="handled">
+      <BodyweightSettings />
       <View style={pulseStyles.card}>
         <Text style={pulseStyles.heading}>Load unit</Text>
         <Text style={pulseStyles.muted}>Choose how loads are displayed and entered.</Text>

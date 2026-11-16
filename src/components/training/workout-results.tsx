@@ -19,7 +19,8 @@ export function WorkoutResults({ workout, onCheck, disabled = false }: {
     {workout.exercises.map((exercise) => <View key={exercise.id}>
       {exercise.sets.map((set, index) => setResultState(set) !== state ? null : <View key={set.id} style={{ gap: 8, paddingVertical: 8 }}>
         <Text style={styles.text}>{exercise.name} · Set {index + 1}{set.type === 'warmup' ? ' · Warm-up' : set.type === 'drop' ? ' · Drop set' : ''}</Text>
-        <Text style={styles.muted}>{(onCheck ? set.load : formatLoad(set.originalLoad, set.loadUnit, loadUnit)) || '—'} {loadUnit} × {exercise.entryMode === 'unilateral' ? `${set.repsLeft || '—'} / ${set.repsRight || '—'}` : set.reps || '—'} reps{set.rpe ? ` · RPE ${set.rpe}` : ''}</Text>
+        <Text style={styles.muted}>{exercise.entryMode === 'bodyweight' ? 'Added load: ' : ''}{(onCheck ? set.load : formatLoad(set.originalLoad, set.loadUnit, loadUnit)) || '—'} {loadUnit} × {exercise.entryMode === 'unilateral' ? `${set.repsLeft || '—'} / ${set.repsRight || '—'}` : set.reps || '—'} reps{set.rpe ? ` · RPE ${set.rpe}` : ''}</Text>
+        {exercise.entryMode === 'bodyweight' && <Text style={styles.muted}>Bodyweight: {set.bodyweight === null ? '—' : formatLoad(set.bodyweight, set.bodyweightUnit, loadUnit)} {loadUnit} · Fraction: {set.bodyweightFraction ?? '—'} · Calculated: {set.bodyweightLoad === null ? '—' : formatLoad(String(set.bodyweightLoad), set.bodyweightUnit, loadUnit)} {loadUnit}</Text>}
         <Text style={styles.muted}>{exercise.loadConvention}</Text>
         {['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment) && <Text style={styles.muted}>Equipment: {equipmentName(set.equipmentSetupId, equipmentSetups)}</Text>}
         {onCheck && state !== 'untouched' && <Pressable accessibilityRole="checkbox"

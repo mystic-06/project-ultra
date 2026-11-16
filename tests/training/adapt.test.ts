@@ -73,12 +73,12 @@ test('unsupported entry modes cannot be accidentally logged as weighted sets', a
   const { training, reopen } = await fixture(t);
   await training.start();
   const id = training.getSnapshot().workout!.id;
-  await training.adaptWorkout(id, { type: 'add-exercise', catalogueId: 'pull-up' });
+  await training.adaptWorkout(id, { type: 'add-exercise', catalogueId: 'assisted-pull-up' });
   const set = training.getSnapshot().workout!.exercises[0].sets[0];
   assert.equal(await training.editSet(set.id, { load: '0', reps: '6' }), false);
   assert.equal(await training.setPerformed(set.id, true), false);
   const recovered = (await reopen()).getSnapshot().workout!.exercises[0];
-  assert.equal(recovered.entryMode, 'bodyweight');
+  assert.equal(recovered.entryMode, 'assisted');
   assert.equal(recovered.sets[0].performed, false);
 });
 

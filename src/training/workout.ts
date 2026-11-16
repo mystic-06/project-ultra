@@ -18,6 +18,7 @@ export type SaveStatus = 'editing' | 'saving' | 'saved' | 'failed';
 export interface EquipmentSetup { id: string; label: string | null; gym: string | null; ratio: string | null; archived: boolean }
 export interface SetEntry {
   equipmentSetupId: string | null;
+  bodyweight: string | null; bodyweightUnit: LoadUnit; bodyweightFraction: number | null; bodyweightLoad: number | null;
   id: string;
   type: 'normal' | 'warmup' | 'drop';
   targetMin: number;
@@ -39,7 +40,9 @@ export interface Workout {
   id: string;
   title: string;
   startedAt: number;
-  exercises: { id: string; exerciseId: string; equipmentSetupId: string | null; entryMode: EntryMode; name: string; loadConvention: string; restSeconds?: number; sets: SetEntry[] }[];
+  bodyweight: string | null;
+  bodyweightUnit: LoadUnit;
+  exercises: { id: string; exerciseId: string; equipmentSetupId: string | null; entryMode: EntryMode; bodyweight: string | null; bodyweightUnit: LoadUnit; bodyweightFraction: number | null; name: string; loadConvention: string; restSeconds?: number; sets: SetEntry[] }[];
 }
 export interface CompletedWorkout extends Workout { completedAt: number }
 export interface WorkoutSummary {
@@ -57,7 +60,10 @@ export function summarizeWorkout(workout: Workout) {
 export interface RestSettings { automatic: boolean; defaultSeconds: number }
 export interface RestTimer { state: 'idle' | 'running' | 'finished'; deadline: number | null; remainingSeconds: number }
 
+export interface BodyweightSettings { bodyweight: string | null; bodyweightUnit?: LoadUnit; writeback: boolean; setupComplete: boolean }
+
 export interface TrainingSnapshot {
+  bodyweightSettings: BodyweightSettings;
   routines: Routine[]; routineDraft: string | null;
   loadUnit: LoadUnit; restSettings: RestSettings; restDeadline: number | null;
   equipmentSetups: EquipmentSetup[]; workout: Workout | null; history: WorkoutSummary[]; isEnding: boolean; isAdapting: boolean;
@@ -67,6 +73,10 @@ export interface TrainingSnapshot {
 export interface WeeklyActivity { startedAt: number; endsAt: number; completedCount: number }
 
 export interface Training {
+  setBodyweightSettings(settings: Partial<BodyweightSettings>): Promise<void>;
+  setBodyweightDetails(exerciseId: string, details: { bodyweight?: string | null; fraction?: number | null }): Promise<void>;
+  setWorkoutBodyweight(exerciseId: string, bodyweight: string | null): Promise<void>;
+  setExerciseFraction(exerciseId: string, fraction: number | null): Promise<void>;
   createEquipmentSetup(input: Pick<EquipmentSetup, 'label' | 'gym' | 'ratio'>): Promise<EquipmentSetup>;
   archiveEquipmentSetup(id: string, archived: boolean): Promise<void>;
   selectEquipmentSetup(exerciseId: string, setupId: string | null): Promise<void>;
@@ -112,11 +122,13 @@ function inspectInput(set: Pick<SetEntry, 'load' | 'reps' | 'repsLeft' | 'repsRi
   const validRpe = rpe === '' || (/^\d+(?:\.\d)?$/.test(rpe) && Number(rpe) >= 1 && Number(rpe) <= 10 && Number(rpe) * 2 % 1 === 0);
   const inputValid = validLoad && validReps && validRpe;
   const hasReps = mode === 'unilateral' ? Number(repsLeft) > 0 || Number(repsRight) > 0 : reps !== '';
-  const complete = inputValid && load !== '' && hasReps;
+  const complete = inputValid && (mode === 'bodyweight' || load !== '') && hasReps;
   const empty = load === '' && (mode === 'unilateral' ? repsLeft === '' && repsRight === '' : reps === '') && rpe === '';
   const inputState: SetEntry['inputState'] = empty ? 'empty' : complete ? 'ready' : 'incomplete';
   return { inputValid, complete, inputState };
 }
+
+function validBodyweight(value: string) { return /^\d+(?:\.\d{1,2})?$/.test(value) && Number.isFinite(Number(value)) && Number(value) > 0; }
 
 export function openTraining(database: TrainingDatabase, now: () => number = Date.now): Promise<Training> {
   return TrainingModule.open(database, now);
@@ -127,7 +139,8 @@ class TrainingModule implements Training {
   private uncheckRevision = new Map<string, number>();
   private pendingChecks = new Map<string, number>();
   private pendingUnchecks = new Map<string, number>();
-  private snapshot: TrainingSnapshot = { routines: [], routineDraft: null, loadUnit: 'kg', equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
+  private bodyweightSettings: BodyweightSettings = { bodyweight: null, bodyweightUnit: 'kg', writeback: false, setupComplete: false };
+  private snapshot: TrainingSnapshot = { bodyweightSettings: this.bodyweightSettings, routines: [], routineDraft: null, loadUnit: 'kg', equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
   private loadUnit: LoadUnit = 'kg';
   private history: WorkoutSummary[] = [];
   private restSettings: RestSettings = { automatic: true, defaultSeconds: 90 };
@@ -142,6 +155,7 @@ class TrainingModule implements Training {
   private closed = false;
   private closing?: Promise<void>;
   private retryIntent = new Map<string, boolean | undefined>();
+  private invalidatedChecks = new Set<string>();
 
   private constructor(private database: TrainingDatabase, private now: () => number) {}
 
@@ -206,6 +220,63 @@ class TrainingModule implements Training {
       await this.database.run('DELETE FROM routines WHERE id = ?', [id]);
       await this.loadRoutines(); this.publish();
     });
+  }
+
+
+  setBodyweightSettings(settings: Partial<BodyweightSettings>): Promise<void> {
+    if (settings.bodyweight != null && !validBodyweight(settings.bodyweight)) return Promise.reject(new Error('Enter a positive bodyweight with up to two decimals.'));
+    const enteredUnit = settings.bodyweightUnit ?? this.loadUnit;
+    return this.enqueue(async () => {
+      const next = { ...this.bodyweightSettings, ...settings, bodyweightUnit: settings.bodyweight !== undefined ? enteredUnit : this.bodyweightSettings.bodyweightUnit };
+      await this.database.run('UPDATE bodyweight_settings SET bodyweight = ?, bodyweight_unit = ?, writeback = ?, setup_complete = ? WHERE id = 1', [next.bodyweight, next.bodyweightUnit ?? 'kg', next.writeback ? 1 : 0, next.setupComplete ? 1 : 0]);
+      this.bodyweightSettings = next; this.publish();
+    });
+  }
+
+  setBodyweightDetails(exerciseId: string, details: { bodyweight?: string | null; fraction?: number | null }): Promise<void> {
+    if (details.bodyweight != null && !validBodyweight(details.bodyweight)) return Promise.reject(new Error('Enter a positive bodyweight with up to two decimals.'));
+    if (details.fraction != null && (!Number.isFinite(details.fraction) || details.fraction < 0 || details.fraction > 1)) return Promise.reject(new Error('Enter a fraction from 0 to 1.'));
+    return this.updateBodyweightExercise(exerciseId, details.bodyweight, details.fraction, details.bodyweight === undefined ? undefined : this.loadUnit);
+  }
+
+  setWorkoutBodyweight(exerciseId: string, bodyweight: string | null): Promise<void> {
+    if (bodyweight !== null && !validBodyweight(bodyweight)) return Promise.reject(new Error('Enter a positive bodyweight with up to two decimals.'));
+    return this.updateBodyweightExercise(exerciseId, bodyweight, undefined, this.loadUnit);
+  }
+  setExerciseFraction(exerciseId: string, fraction: number | null): Promise<void> {
+    if (fraction !== null && (!Number.isFinite(fraction) || fraction < 0 || fraction > 1)) return Promise.reject(new Error('Enter a fraction from 0 to 1.'));
+    return this.updateBodyweightExercise(exerciseId, undefined, fraction);
+  }
+  private updateBodyweightExercise(exerciseId: string, bodyweight: string | null | undefined, fraction: number | null | undefined, enteredUnit?: LoadUnit): Promise<void> {
+    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
+    this.isAdapting = true; this.publish();
+    return this.enqueue(async () => {
+      const exercise = this.workout?.exercises.find((item) => item.id === exerciseId);
+      if (!exercise || exercise.entryMode !== 'bodyweight') throw new Error('Bodyweight exercise not found.');
+      const workout = this.workout!;
+      const weight = bodyweight === undefined ? workout.bodyweight : bodyweight;
+      const unit = enteredUnit ?? workout.bodyweightUnit;
+      const targets = bodyweight === undefined ? [exercise] : workout.exercises.filter((item) => item.entryMode === 'bodyweight');
+      await this.transaction(async () => {
+        if (bodyweight !== undefined) await this.database.run('UPDATE workouts SET bodyweight = ?, bodyweight_unit = ? WHERE id = ?', [weight, unit, workout.id]);
+        for (const target of targets) {
+          const share = target.id === exercise.id && fraction !== undefined ? fraction : target.bodyweightFraction;
+          const calculated = weight !== null && share !== null ? Number(weight) * share : null;
+          await this.database.run('UPDATE workout_exercises SET bodyweight = ?, bodyweight_unit = ?, bodyweight_fraction = ? WHERE id = ?', [weight, unit, share, target.id]);
+          await this.database.run('UPDATE workout_sets SET bodyweight = ?, bodyweight_unit = ?, bodyweight_fraction = ?, bodyweight_load = ? WHERE workout_exercise_id = ?', [weight, unit, share, calculated, target.id]);
+        }
+        if (fraction !== undefined) await this.database.run('INSERT INTO exercise_fractions(exercise_id, fraction) VALUES (?, ?) ON CONFLICT(exercise_id) DO UPDATE SET fraction = excluded.fraction', [exercise.exerciseId, fraction]);
+        if (bodyweight !== undefined && this.bodyweightSettings.writeback) await this.database.run('UPDATE bodyweight_settings SET bodyweight = ?, bodyweight_unit = ? WHERE id = 1', [weight, unit]);
+      });
+      if (bodyweight !== undefined) { workout.bodyweight = weight; workout.bodyweightUnit = unit; }
+      for (const target of targets) {
+        const share = target.id === exercise.id && fraction !== undefined ? fraction : target.bodyweightFraction;
+        const calculated = weight !== null && share !== null ? Number(weight) * share : null;
+        target.bodyweight = weight; target.bodyweightUnit = unit; target.bodyweightFraction = share;
+        target.sets.forEach((set) => { set.bodyweight = weight; set.bodyweightUnit = unit; set.bodyweightFraction = share; set.bodyweightLoad = calculated; });
+      }
+      if (bodyweight !== undefined && this.bodyweightSettings.writeback) { this.bodyweightSettings.bodyweight = weight; this.bodyweightSettings.bodyweightUnit = unit; }
+    }).finally(() => { this.isAdapting = false; this.publish(); });
   }
 
   getWeeklyActivity(at = this.now()): WeeklyActivity {
@@ -274,7 +345,7 @@ class TrainingModule implements Training {
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     const saveStatus = this.isAdapting ? 'saving' : (['failed', 'saving', 'editing'] as const)
       .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
-    this.snapshot = { loadUnit: this.loadUnit, routines: JSON.parse(JSON.stringify(this.routines)), routineDraft: this.routineDraft, equipmentSetups: this.equipmentSetups.map((setup) => ({ ...setup })), restSettings: { ...this.restSettings }, restDeadline: this.restDeadline, history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
+    this.snapshot = { bodyweightSettings: { ...this.bodyweightSettings }, loadUnit: this.loadUnit, routines: JSON.parse(JSON.stringify(this.routines)), routineDraft: this.routineDraft, equipmentSetups: this.equipmentSetups.map((setup) => ({ ...setup })), restSettings: { ...this.restSettings }, restDeadline: this.restDeadline, history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
         ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
@@ -306,10 +377,12 @@ class TrainingModule implements Training {
   private async load() {
     const [loadSettings] = await this.database.all<{ unit: LoadUnit }>('SELECT unit FROM load_settings WHERE id = 1');
     this.loadUnit = loadSettings.unit;
-    const [workout] = await this.database.all<{ id: string; title: string; started_at: number }>(
-      'SELECT id, title, started_at FROM workouts WHERE active = 1');
+    const [workout] = await this.database.all<{ id: string; title: string; started_at: number; bodyweight: string | null; bodyweight_unit: LoadUnit }>(
+      'SELECT id, title, started_at, bodyweight, bodyweight_unit FROM workouts WHERE active = 1');
     const [settings] = await this.database.all<{ automatic: number; default_seconds: number }>('SELECT automatic, default_seconds FROM rest_settings WHERE id = 1');
     this.restSettings = { automatic: settings.automatic === 1, defaultSeconds: settings.default_seconds };
+    const [bodyweight] = await this.database.all<{ bodyweight: string | null; bodyweight_unit: LoadUnit; writeback: number; setup_complete: number }>('SELECT * FROM bodyweight_settings WHERE id = 1');
+    this.bodyweightSettings = { bodyweight: bodyweight.bodyweight, bodyweightUnit: bodyweight.bodyweight_unit, writeback: bodyweight.writeback === 1, setupComplete: bodyweight.setup_complete === 1 };
     if (workout) {
       this.workout = await this.readWorkout(workout);
       const [timer] = await this.database.all<{ rest_deadline: number | null }>('SELECT rest_deadline FROM workouts WHERE id = ?', [workout.id]);
@@ -317,22 +390,22 @@ class TrainingModule implements Training {
     }
   }
 
-  private async readWorkout(workout: { id: string; title: string; started_at: number }): Promise<Workout> {
-    const exercises = await this.database.all<{ id: string; exercise_id: string; equipment_setup_id: string | null; entry_mode: EntryMode; name: string; load_convention: string; rest_seconds: number | null }>(
-      'SELECT id, exercise_id, equipment_setup_id, entry_mode, name, load_convention, rest_seconds FROM workout_exercises WHERE workout_id = ? ORDER BY position', [workout.id]);
+  private async readWorkout(workout: { id: string; title: string; started_at: number; bodyweight: string | null; bodyweight_unit: LoadUnit }): Promise<Workout> {
+    const exercises = await this.database.all<{ id: string; exercise_id: string; equipment_setup_id: string | null; entry_mode: EntryMode; name: string; load_convention: string; rest_seconds: number | null; bodyweight: string | null; bodyweight_unit: LoadUnit; bodyweight_fraction: number | null }>(
+      'SELECT id, exercise_id, equipment_setup_id, entry_mode, name, load_convention, rest_seconds, bodyweight, bodyweight_unit, bodyweight_fraction FROM workout_exercises WHERE workout_id = ? ORDER BY position', [workout.id]);
     const entries = [];
     for (const exercise of exercises) {
       const sets = await this.database.all<{
         id: string; type: SetEntry['type']; target_min: number; target_max: number;
-        load: string | null; load_unit: LoadUnit; reps: number | null; reps_left: number | null; reps_right: number | null; rpe: string | null; performed: number; equipment_setup_id: string | null;
+        load: string | null; load_unit: LoadUnit; reps: number | null; reps_left: number | null; reps_right: number | null; rpe: string | null; performed: number; equipment_setup_id: string | null; bodyweight: string | null; bodyweight_unit: LoadUnit; bodyweight_fraction: number | null; bodyweight_load: number | null;
       }>('SELECT * FROM workout_sets WHERE workout_exercise_id = ? ORDER BY position', [exercise.id]);
-      entries.push({ id: exercise.id, exerciseId: exercise.exercise_id, equipmentSetupId: exercise.equipment_setup_id, entryMode: exercise.entry_mode, name: exercise.name, loadConvention: exercise.load_convention, restSeconds: exercise.rest_seconds ?? undefined,
-        sets: sets.map((set): SetEntry => ({ id: set.id, equipmentSetupId: set.equipment_setup_id, type: set.type, targetMin: set.target_min,
+      entries.push({ id: exercise.id, exerciseId: exercise.exercise_id, equipmentSetupId: exercise.equipment_setup_id, entryMode: exercise.entry_mode, bodyweight: exercise.bodyweight, bodyweightUnit: exercise.bodyweight_unit, bodyweightFraction: exercise.bodyweight_fraction, name: exercise.name, loadConvention: exercise.load_convention, restSeconds: exercise.rest_seconds ?? undefined,
+        sets: sets.map((set): SetEntry => ({ id: set.id, equipmentSetupId: set.equipment_setup_id, bodyweight: set.bodyweight, bodyweightUnit: set.bodyweight_unit, bodyweightFraction: set.bodyweight_fraction, bodyweightLoad: set.bodyweight_load, type: set.type, targetMin: set.target_min,
           targetMax: set.target_max, originalLoad: set.load ?? '', loadUnit: set.load_unit, load: formatLoad(set.load ?? '', set.load_unit, this.loadUnit), reps: set.reps?.toString() ?? '', repsLeft: set.reps_left?.toString() ?? '', repsRight: set.reps_right?.toString() ?? '', rpe: set.rpe ?? '',
           performed: set.performed === 1, revision: 0, status: 'saved',
           inputState: inspectInput({ load: set.load ?? '', reps: set.reps?.toString() ?? '', repsLeft: set.reps_left?.toString() ?? '', repsRight: set.reps_right?.toString() ?? '', rpe: set.rpe ?? '' }, exercise.entry_mode).inputState, error: null })) });
     }
-    return { id: workout.id, title: workout.title, startedAt: workout.started_at, exercises: entries };
+    return { id: workout.id, title: workout.title, startedAt: workout.started_at, bodyweight: workout.bodyweight, bodyweightUnit: workout.bodyweight_unit, exercises: entries };
   }
 
   private async readHistory() {
@@ -357,8 +430,8 @@ class TrainingModule implements Training {
 
   getCompletedWorkout(id: string): Promise<CompletedWorkout | null> {
     return this.enqueue(async () => {
-      const [workout] = await this.database.all<{ id: string; title: string; started_at: number; completed_at: number }>(
-        'SELECT id, title, started_at, completed_at FROM workouts WHERE id = ? AND active = 0 AND completed_at IS NOT NULL', [id]);
+      const [workout] = await this.database.all<{ id: string; title: string; started_at: number; completed_at: number; bodyweight: string | null; bodyweight_unit: LoadUnit }>(
+        'SELECT id, title, started_at, completed_at, bodyweight, bodyweight_unit FROM workouts WHERE id = ? AND active = 0 AND completed_at IS NOT NULL', [id]);
       return workout ? { ...await this.readWorkout(workout), completedAt: workout.completed_at } : null;
     });
   }
@@ -396,6 +469,7 @@ class TrainingModule implements Training {
       this.workout = null;
       this.restDeadline = null;
       this.retryIntent.clear();
+      this.invalidatedChecks.clear();
     }).finally(() => { this.isEnding = false; this.publish(); });
   }
 
@@ -484,6 +558,11 @@ class TrainingModule implements Training {
           if (!previous.exercises.some((item) => item.id === exercise.id)) {
             const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT l.setup_id FROM equipment_last_selection l LEFT JOIN equipment_setups s ON s.id = l.setup_id WHERE l.exercise_id = ? AND (l.setup_id IS NULL OR s.archived = 0)', [exercise.exerciseId]);
             exercise.equipmentSetupId = selection?.setup_id ?? null;
+            if (exercise.entryMode === 'bodyweight') {
+              const [fraction] = await this.database.all<{ fraction: number | null }>('SELECT fraction FROM exercise_fractions WHERE exercise_id = ?', [exercise.exerciseId]);
+              exercise.bodyweight = previous.bodyweight; exercise.bodyweightUnit = previous.bodyweightUnit; exercise.bodyweightFraction = fraction?.fraction ?? null;
+              exercise.sets.forEach((set) => { set.bodyweight = exercise.bodyweight; set.bodyweightUnit = exercise.bodyweightUnit; set.bodyweightFraction = exercise.bodyweightFraction; set.bodyweightLoad = exercise.bodyweight !== null && exercise.bodyweightFraction !== null ? Number(exercise.bodyweight) * exercise.bodyweightFraction : null; });
+            }
             exercise.sets.forEach((set) => { set.equipmentSetupId = exercise.equipmentSetupId; });
           }
         }
@@ -523,6 +602,7 @@ class TrainingModule implements Training {
       this.workout = workout;
       this.restDeadline = null;
       this.retryIntent.clear();
+      this.invalidatedChecks.clear();
       this.publish();
       return true;
     });
@@ -531,8 +611,8 @@ class TrainingModule implements Training {
   private async insertWorkout(routine: Routine): Promise<Workout> {
     const [{ id }] = await this.database.all<{ id: string }>('SELECT lower(hex(randomblob(16))) AS id');
     const startedAt = this.now();
-    await this.database.run('INSERT INTO workouts(id, routine_id, title, started_at, active) VALUES (?, ?, ?, ?, 1)',
-      [id, routine.id, routine.title, startedAt]);
+    await this.database.run('INSERT INTO workouts(id, routine_id, title, started_at, active, bodyweight, bodyweight_unit) VALUES (?, ?, ?, ?, 1, ?, ?)',
+      [id, routine.id, routine.title, startedAt, this.bodyweightSettings.bodyweight, this.bodyweightSettings.bodyweightUnit ?? 'kg']);
     const exercises: Workout['exercises'] = [];
     for (const [position, exercise] of routine.exercises.entries()) {
       if (exercise.restSeconds !== undefined && (!Number.isSafeInteger(exercise.restSeconds) || exercise.restSeconds < 1 || exercise.restSeconds > 86400)) throw new Error('Invalid routine rest duration.');
@@ -542,18 +622,24 @@ class TrainingModule implements Training {
       const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT l.setup_id FROM equipment_last_selection l LEFT JOIN equipment_setups s ON s.id = l.setup_id WHERE l.exercise_id = ? AND (l.setup_id IS NULL OR s.archived = 0)', [exercise.exerciseId]);
       const equipmentSetupId = selection?.setup_id ?? null;
       await this.database.run('UPDATE workout_exercises SET equipment_setup_id = ? WHERE id = ?', [equipmentSetupId, exerciseId]);
+      const [fraction] = await this.database.all<{ fraction: number | null }>('SELECT fraction FROM exercise_fractions WHERE exercise_id = ?', [exercise.exerciseId]);
+      const bodyweight = exercise.entryMode === 'bodyweight' ? this.bodyweightSettings.bodyweight : null;
+      const bodyweightUnit = this.bodyweightSettings.bodyweightUnit ?? 'kg';
+      const bodyweightFraction = exercise.entryMode === 'bodyweight' ? fraction?.fraction ?? null : null;
+      await this.database.run('UPDATE workout_exercises SET bodyweight = ?, bodyweight_unit = ?, bodyweight_fraction = ? WHERE id = ?', [bodyweight, bodyweightUnit, bodyweightFraction, exerciseId]);
       const sets: SetEntry[] = [];
       for (const [setPosition, set] of exercise.sets.entries()) {
         const setId = `${exerciseId}:${setPosition}`;
         await this.database.run('INSERT INTO workout_sets(id, workout_exercise_id, position, type, target_min, target_max) VALUES (?, ?, ?, ?, ?, ?)',
           [setId, exerciseId, setPosition, set.type, set.targetMin, set.targetMax]);
         await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE id = ?', [equipmentSetupId, setId]);
-        sets.push({ id: setId, equipmentSetupId, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
+        sets.push({ id: setId, equipmentSetupId, bodyweight, bodyweightUnit, bodyweightFraction, bodyweightLoad: bodyweight !== null && bodyweightFraction !== null ? Number(bodyweight) * bodyweightFraction : null, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
           load: '', originalLoad: '', loadUnit: 'kg', reps: '', repsLeft: '', repsRight: '', rpe: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null });
       }
-      exercises.push({ id: exerciseId, exerciseId: exercise.exerciseId, equipmentSetupId, entryMode: exercise.entryMode ?? 'weighted', name: exercise.name, loadConvention: exercise.loadConvention, restSeconds: exercise.restSeconds, sets });
+      await this.database.run('UPDATE workout_sets SET bodyweight = ?, bodyweight_unit = ?, bodyweight_fraction = ?, bodyweight_load = ? WHERE workout_exercise_id = ?', [bodyweight, bodyweightUnit, bodyweightFraction, bodyweight !== null && bodyweightFraction !== null ? Number(bodyweight) * bodyweightFraction : null, exerciseId]);
+      exercises.push({ id: exerciseId, exerciseId: exercise.exerciseId, equipmentSetupId, entryMode: exercise.entryMode ?? 'weighted', bodyweight, bodyweightUnit, bodyweightFraction, name: exercise.name, loadConvention: exercise.loadConvention, restSeconds: exercise.restSeconds, sets });
     }
-    return { id, title: routine.title, startedAt, exercises };
+    return { id, title: routine.title, startedAt, bodyweight: this.bodyweightSettings.bodyweight, bodyweightUnit: this.bodyweightSettings.bodyweightUnit ?? 'kg', exercises };
   }
 
   private row(id: string) {
@@ -609,7 +695,7 @@ class TrainingModule implements Training {
   }
 
   private supportsEntry(row: SetEntry) {
-    if (['weighted', 'unilateral'].includes(this.entryMode(row))) return true;
+    if (['weighted', 'unilateral', 'bodyweight'].includes(this.entryMode(row))) return true;
     row.error = 'Logging for this entry mode is not available yet.';
     this.publish();
     return false;
