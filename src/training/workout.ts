@@ -16,7 +16,9 @@ export function formatLoad(value: string, from: LoadUnit, to: LoadUnit): string 
 
 export type SaveStatus = 'editing' | 'saving' | 'saved' | 'failed';
 export interface EquipmentSetup { id: string; label: string | null; gym: string | null; ratio: string | null; archived: boolean }
+export interface PreviousResult { reference: string; entryMode: EntryMode; loadConvention: string; bodyweightLoad: string | null; originalBodyweightLoad: number | null; bodyweightUnit: LoadUnit; type: SetEntry['type']; load: string; originalLoad: string; loadUnit: LoadUnit; reps: string; repsLeft: string; repsRight: string; rpe: string }
 export interface SetEntry {
+  previous?: PreviousResult;
   equipmentSetupId: string | null;
   bodyweight: string | null; bodyweightUnit: LoadUnit; bodyweightFraction: number | null; bodyweightLoad: number | null;
   id: string;
@@ -100,6 +102,7 @@ export interface Training {
   start(routine?: Routine): Promise<boolean>;
   replaceActiveWorkout(routine: Routine, expectedWorkoutId: string): Promise<boolean>;
   editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps' | 'repsLeft' | 'repsRight' | 'rpe' | 'type'>>): Promise<boolean>;
+  copyPrevious(id: string, overwrite: boolean, expected?: { reference: string; revision: number }): Promise<boolean>;
   setPerformed(id: string, performed: boolean): Promise<boolean>;
   retrySet(id: string): Promise<boolean>;
   retryFailedSaves(): Promise<boolean>;
@@ -143,6 +146,8 @@ class TrainingModule implements Training {
   private snapshot: TrainingSnapshot = { bodyweightSettings: this.bodyweightSettings, routines: [], routineDraft: null, loadUnit: 'kg', equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
   private loadUnit: LoadUnit = 'kg';
   private history: WorkoutSummary[] = [];
+  private previousByPair = new Map<string, PreviousResult[]>();
+  private previousGeneration = 0;
   private restSettings: RestSettings = { automatic: true, defaultSeconds: 90 };
   private restDeadline: number | null = null;
   private equipmentSetups: EquipmentSetup[] = [];
@@ -172,6 +177,7 @@ class TrainingModule implements Training {
       });
       await training.loadRoutines();
       training.history = await training.readHistory();
+      training.previousByPair = await training.readPreviousProjection(training.workout);
       training.publish();
       return training;
     } catch (error) {
@@ -302,6 +308,7 @@ class TrainingModule implements Training {
     return this.enqueue(async () => {
       await this.transaction(() => this.database.run('UPDATE load_settings SET unit = ? WHERE id = 1', [unit]));
       this.loadUnit = unit;
+      this.previousGeneration++;
       for (const row of rows) row.load = formatLoad(row.originalLoad, row.loadUnit, unit);
     }).finally(() => { this.isAdapting = false; this.publish(); });
   }
@@ -341,14 +348,54 @@ class TrainingModule implements Training {
     return () => { this.listeners.delete(listener); };
   };
 
+  private pairKey(exerciseId: string, setupId: string | null) { return JSON.stringify([exerciseId, setupId]); }
+
+  /** Read only the latest matching workout for pairs present in the active workout.
+   * Call inside the mutation transaction so lookup failures roll back the change. */
+  private async readPreviousProjection(workout: Workout | null, reuse?: Map<string, PreviousResult[]>): Promise<Map<string, PreviousResult[]>> {
+    const projection = new Map<string, PreviousResult[]>();
+    for (const exercise of workout?.exercises ?? []) for (const set of exercise.sets) {
+      const key = this.pairKey(exercise.exerciseId, set.equipmentSetupId);
+      if (projection.has(key)) continue;
+      if (reuse?.has(key)) { projection.set(key, reuse.get(key)!); continue; }
+      const [latest] = await this.database.all<{ id: string }>(`SELECT w.id FROM workout_exercises e
+        JOIN workout_sets s ON s.workout_exercise_id = e.id
+        JOIN workouts w ON w.id = e.workout_id
+        WHERE e.exercise_id = ? AND s.equipment_setup_id IS ? AND w.active = 0 AND w.completed_at IS NOT NULL
+        ORDER BY w.completed_at DESC, w.id DESC LIMIT 1`, [exercise.exerciseId, set.equipmentSetupId]);
+      if (!latest) { projection.set(key, []); continue; }
+      const rows = await this.database.all<{ id: string; entry_mode: EntryMode; load_convention: string; bodyweight_load: number | null; bodyweight_unit: LoadUnit; type: SetEntry['type']; load: string | null; load_unit: LoadUnit; reps: number | null; reps_left: number | null; reps_right: number | null; rpe: string | null }>(`SELECT s.id, e.entry_mode, e.load_convention, s.bodyweight_load, s.bodyweight_unit, s.type, s.load, s.load_unit, s.reps, s.reps_left, s.reps_right, s.rpe
+        FROM workout_exercises e JOIN workout_sets s ON s.workout_exercise_id = e.id
+        WHERE e.workout_id = ? AND e.exercise_id = ? AND s.equipment_setup_id IS ? AND s.performed = 1
+        ORDER BY e.position, s.position`, [latest.id, exercise.exerciseId, set.equipmentSetupId]);
+      projection.set(key, rows.map((row) => ({ reference: row.id, entryMode: row.entry_mode, loadConvention: row.load_convention, bodyweightLoad: null, originalBodyweightLoad: row.bodyweight_load, bodyweightUnit: row.bodyweight_unit, type: row.type, originalLoad: row.load ?? '', loadUnit: row.load_unit, load: '', reps: row.reps?.toString() ?? '', repsLeft: row.reps_left?.toString() ?? '', repsRight: row.reps_right?.toString() ?? '', rpe: row.rpe ?? '' })));
+    }
+    return projection;
+  }
+
+  private previousResults(): Map<string, PreviousResult> {
+    const results = new Map<string, PreviousResult>();
+    const occurrences = new Map<string, number>();
+    for (const exercise of this.workout?.exercises ?? []) for (const set of exercise.sets) {
+      const pair = this.pairKey(exercise.exerciseId, set.equipmentSetupId);
+      const key = JSON.stringify([pair, set.type]);
+      const index = occurrences.get(key) ?? 0;
+      occurrences.set(key, index + 1);
+      const previous = this.previousByPair.get(pair)?.filter((item) => item.type === set.type)[index];
+      if (previous) results.set(set.id, { ...previous, reference: `${this.previousGeneration}:${previous.reference}`, load: formatLoad(previous.originalLoad, previous.loadUnit, this.loadUnit), bodyweightLoad: previous.originalBodyweightLoad === null ? null : formatLoad(String(previous.originalBodyweightLoad), previous.bodyweightUnit, this.loadUnit) });
+    }
+    return results;
+  }
+
   private publish() {
+    const previous = this.previousResults();
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     const saveStatus = this.isAdapting ? 'saving' : (['failed', 'saving', 'editing'] as const)
       .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
     this.snapshot = { bodyweightSettings: { ...this.bodyweightSettings }, loadUnit: this.loadUnit, routines: JSON.parse(JSON.stringify(this.routines)), routineDraft: this.routineDraft, equipmentSetups: this.equipmentSetups.map((setup) => ({ ...setup })), restSettings: { ...this.restSettings }, restDeadline: this.restDeadline, history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
-        ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
+        ...exercise, sets: exercise.sets.map((set) => ({ ...set, previous: previous.get(set.id) })),
       })),
     } : null };
     this.listeners.forEach((listener) => listener());
@@ -466,6 +513,8 @@ class TrainingModule implements Training {
       });
       if (!discard) this.history = [{ id: workout.id, title: workout.title, startedAt: workout.startedAt,
         completedAt, exerciseNames: workout.exercises.map((exercise) => exercise.name), performedSetCount: summarizeWorkout(workout).performed }, ...this.history];
+      this.previousByPair.clear();
+      this.previousGeneration++;
       this.workout = null;
       this.restDeadline = null;
       this.retryIntent.clear();
@@ -515,13 +564,19 @@ class TrainingModule implements Training {
       const exercise = this.workout?.exercises.find((item) => item.id === exerciseId);
       if (!exercise || !['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment)) throw new Error('Equipment is unavailable for this exercise.');
       this.validateEquipment(setupId);
-      await this.transaction(async () => {
+      const next = JSON.parse(JSON.stringify(this.workout)) as Workout;
+      const nextExercise = next.exercises.find((item) => item.id === exerciseId)!;
+      nextExercise.equipmentSetupId = setupId;
+      nextExercise.sets.forEach((set) => { if (!set.performed) set.equipmentSetupId = setupId; });
+      const projection = await this.transaction(async () => {
         await this.database.run('UPDATE workout_exercises SET equipment_setup_id = ? WHERE id = ?', [setupId, exerciseId]);
         await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE workout_exercise_id = ? AND performed = 0', [setupId, exerciseId]);
         await this.database.run('INSERT INTO equipment_last_selection(exercise_id, setup_id) VALUES (?, ?) ON CONFLICT(exercise_id) DO UPDATE SET setup_id = excluded.setup_id', [exercise.exerciseId, setupId]);
+        return this.readPreviousProjection(next, this.previousByPair);
       });
       exercise.equipmentSetupId = setupId;
       exercise.sets.forEach((set) => { if (!set.performed) set.equipmentSetupId = setupId; });
+      this.previousByPair = projection; this.previousGeneration++;
     }).finally(() => { this.isAdapting = false; this.publish(); });
   }
 
@@ -533,8 +588,14 @@ class TrainingModule implements Training {
       const set = exercise?.sets.find((item) => item.id === setId);
       if (!exercise || !set || !set.performed || !['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment)) throw new Error('Checked set not found.');
       this.validateEquipment(setupId);
-      await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE id = ?', [setupId, setId]);
+      const next = JSON.parse(JSON.stringify(this.workout)) as Workout;
+      next.exercises.flatMap((item) => item.sets).find((item) => item.id === setId)!.equipmentSetupId = setupId;
+      const projection = await this.transaction(async () => {
+        await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE id = ?', [setupId, setId]);
+        return this.readPreviousProjection(next, this.previousByPair);
+      });
       set.equipmentSetupId = setupId;
+      this.previousByPair = projection; this.previousGeneration++;
     }).finally(() => { this.isAdapting = false; this.publish(); });
   }
 
@@ -567,10 +628,11 @@ class TrainingModule implements Training {
           }
         }
         await persistWorkoutStructure(this.database, previous, result);
-        return result;
+        return { workout: result, projection: await this.readPreviousProjection(result, this.previousByPair) };
       });
-      this.workout = next;
-      const remaining = new Set(next.exercises.flatMap((exercise) => exercise.sets.map((set) => set.id)));
+      this.workout = next.workout;
+      this.previousByPair = next.projection; this.previousGeneration++;
+      const remaining = new Set(next.workout.exercises.flatMap((exercise) => exercise.sets.map((set) => set.id)));
       for (const id of this.retryIntent.keys()) if (!remaining.has(id)) this.retryIntent.delete(id);
     }).finally(() => { this.isAdapting = false; this.publish(); });
   }
@@ -579,8 +641,9 @@ class TrainingModule implements Training {
     if (this.isEnding || this.isAdapting) return Promise.resolve(false);
     return this.enqueue(async () => {
       if (this.workout) return false;
-      const workout = await this.transaction(() => this.insertWorkout(routine));
-      this.workout = workout;
+      const result = await this.transaction(async () => { const workout = await this.insertWorkout(routine); return { workout, projection: await this.readPreviousProjection(workout) }; });
+      this.workout = result.workout;
+      this.previousByPair = result.projection; this.previousGeneration++;
       this.publish();
       return true;
     });
@@ -597,9 +660,11 @@ class TrainingModule implements Training {
         const [active] = await this.database.all<{ id: string }>('SELECT id FROM workouts WHERE active = 1');
         if (active?.id !== expectedWorkoutId) throw new Error('The active workout changed.');
         await this.database.run('DELETE FROM workouts WHERE id = ? AND active = 1', [expectedWorkoutId]);
-        return this.insertWorkout(routine);
+        const workout = await this.insertWorkout(routine);
+        return { workout, projection: await this.readPreviousProjection(workout) };
       });
-      this.workout = workout;
+      this.workout = workout.workout;
+      this.previousByPair = workout.projection; this.previousGeneration++;
       this.restDeadline = null;
       this.retryIntent.clear();
       this.invalidatedChecks.clear();
@@ -653,6 +718,7 @@ class TrainingModule implements Training {
     const row = this.row(id);
     if (!row) return Promise.resolve(false);
     if (!this.supportsEntry(row)) return Promise.resolve(false);
+    if (patch.type !== undefined && patch.type !== row.type) this.previousGeneration++;
     Object.assign(row, patch);
     if (patch.load !== undefined && isValidLoad(patch.load)) {
       row.originalLoad = patch.load;
@@ -661,6 +727,29 @@ class TrainingModule implements Training {
     const input = inspectInput(row, this.entryMode(row));
     row.inputState = input.inputState;
     return this.save(row, !input.complete && (row.performed || this.pendingChecks.has(id)) ? false : undefined);
+  }
+
+  copyPrevious(id: string, overwrite: boolean, expected?: { reference: string; revision: number }) {
+    if (this.isEnding || this.isAdapting) return Promise.resolve(false);
+    const row = this.row(id);
+    const previous = this.previousResults().get(id);
+    if (!row || !previous || !this.supportsEntry(row)) return Promise.resolve(false);
+    const exercise = this.workout?.exercises.find((item) => item.sets.some((set) => set.id === id));
+    if (!exercise || previous.entryMode !== exercise.entryMode || previous.loadConvention !== exercise.loadConvention) {
+      row.error = 'Previous result uses a different measurement definition and cannot be copied.'; this.publish(); return Promise.resolve(false);
+    }
+    if (overwrite && (!expected || expected.reference !== previous.reference || expected.revision !== row.revision)) { row.error = 'The set or previous result changed. Review it before copying.'; this.publish(); return Promise.resolve(false); }
+    if (!overwrite && (row.load !== '' || row.reps !== '' || row.repsLeft !== '' || row.repsRight !== '')) return Promise.resolve(false);
+    const copied = { ...row, load: previous.load, originalLoad: previous.originalLoad, loadUnit: previous.loadUnit, reps: previous.reps, repsLeft: previous.repsLeft, repsRight: previous.repsRight };
+    const input = inspectInput(copied, this.entryMode(row));
+    if (!input.complete && (row.performed || this.pendingChecks.has(id))) {
+      row.error = 'Previous values cannot complete this checked set. Enter compatible values first.';
+      this.publish();
+      return Promise.resolve(false);
+    }
+    Object.assign(row, copied);
+    row.inputState = input.inputState;
+    return this.save(row);
   }
 
   setPerformed(id: string, performed: boolean) {

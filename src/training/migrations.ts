@@ -100,6 +100,8 @@ const migrations = [
     SELECT id, workout_exercise_id, position, type, target_min, target_max, load, load_unit, reps, reps_left, reps_right, rpe, performed, equipment_setup_id FROM workout_sets;
   DROP TABLE workout_sets;
   ALTER TABLE workout_sets_new RENAME TO workout_sets;`,
+  `CREATE INDEX previous_exercise_lookup ON workout_exercises(exercise_id, workout_id);
+  CREATE INDEX previous_setup_lookup ON workout_sets(workout_exercise_id, equipment_setup_id);`,
 ];
 
 export async function migrate(database: TrainingDatabase) {

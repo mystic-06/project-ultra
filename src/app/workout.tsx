@@ -124,6 +124,7 @@ function BodyweightDetails({ exercise, training, disabled, loadUnit }: { exercis
 
 function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilateral }: { set: SetEntry; index: number; exerciseName: string; training: Training; loadUnit: 'kg' | 'lb'; disabled: boolean; unilateral: boolean }) {
   const repsInput = useRef<ComponentRef<typeof TextInput>>(null);
+  const [confirmCopy, setConfirmCopy] = useState<{ reference: string; revision: number } | null>(null);
   const label = `${exerciseName}, set ${index + 1}`;
   const target = `${set.targetMin === 0 && set.targetMax === 0 ? 'No rep target' : `${set.targetMin}–${set.targetMax} reps`}${set.type === 'warmup' ? ' · Warm-up' : set.type === 'drop' ? ' · Drop set' : ''}`;
   const durability = set.status === 'saving' ? 'Saving…' : set.status === 'failed' ? 'Save failed' : set.status === 'editing' ? 'Incomplete input · not saved' : 'Saved';
@@ -134,7 +135,11 @@ function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilat
     <Text style={styles.target}>{target}</Text>
     <View style={styles.row}>
       <Text style={[pulseStyles.text, styles.identity]}>{index + 1}</Text>
-      <Text style={[pulseStyles.muted, styles.previous]} accessibilityLabel="No previous result">—</Text>
+      <View style={styles.previous}>{set.previous && <Pressable accessibilityRole="button" accessibilityLabel={`Copy previous result for ${label}`} disabled={disabled} onPress={() => {
+        if (set.load || set.reps || set.repsLeft || set.repsRight) setConfirmCopy({ reference: set.previous!.reference, revision: set.revision });
+        else void training.copyPrevious(set.id, false);
+      }}><Text style={pulseStyles.muted}>{set.previous.entryMode === 'bodyweight' ? [set.previous.bodyweightLoad !== null ? `Bodyweight ${set.previous.bodyweightLoad} ${loadUnit}` : '', set.previous.load !== '' ? `Added ${set.previous.load} ${loadUnit}` : ''].filter(Boolean).join(' · ') : set.previous.load !== '' ? `${set.previous.load} ${loadUnit} (${set.previous.loadConvention})` : ''}{(set.previous.entryMode === 'bodyweight' ? set.previous.bodyweightLoad !== null || set.previous.load !== '' : set.previous.load !== '') ? ' × ' : ''}{set.previous.entryMode === 'unilateral' ? `${set.previous.repsLeft || '–'}/${set.previous.repsRight || '–'}` : set.previous.reps}{set.previous.rpe ? ` @ ${set.previous.rpe}` : ''}
+Copy</Text></Pressable>}</View>
       <TextInput editable={!disabled} style={[styles.input, styles.field]} value={set.load} placeholder="—" placeholderTextColor={pulse.secondary}
         accessibilityLabel={`${label}, load in ${loadUnit === 'kg' ? 'kilograms' : 'pounds'}`} keyboardType="decimal-pad" selectTextOnFocus
         autoCorrect={false} returnKeyType="next" submitBehavior="submit"
@@ -156,6 +161,7 @@ function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilat
         <Text style={[styles.checkText, set.performed && { color: pulse.onAccent }]}>{set.performed ? '✓' : '○'}</Text>
       </Pressable>
     </View>
+    {confirmCopy && <View style={pulseStyles.card}><Text style={pulseStyles.text}>Replace today’s load and reps with the previous result?</Text><EditAction label="Replace load and reps" disabled={disabled} onPress={() => { void training.copyPrevious(set.id, true, confirmCopy); setConfirmCopy(null); }} /><EditAction label="Cancel copy" onPress={() => setConfirmCopy(null)} /></View>}
     <View style={styles.options}>
       {(['normal', 'warmup', 'drop'] as const).map((type) => <Pressable key={type} accessibilityRole="radio" accessibilityState={{ checked: set.type === type, disabled }} disabled={disabled}
         accessibilityLabel={`${label}, ${type === 'warmup' ? 'Warm-up' : type}`} onPress={() => { void training.editSet(set.id, { type }); }} style={[styles.typeButton, set.type === type && styles.selectedType]}>
