@@ -15,7 +15,7 @@ interface StartChoice {
 }
 
 export default function HomeScreen() {
-  const { training, workout } = useTraining();
+  const { training, workout, history, isEnding } = useTraining();
   const [starting, setStarting] = useState(false);
   const [replacing, setReplacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,12 +90,21 @@ export default function HomeScreen() {
           <Text style={styles.muted}>3 exercises · 7 sets</Text>
           <Text style={styles.muted}>Lat pulldown · Chest press · Overhead press</Text>
           <Text style={styles.muted}>A weighted subset of UPPER to get started.</Text>
-          <Pressable accessibilityRole="button" accessibilityState={{ disabled: starting }}
-            disabled={starting} onPress={start} style={[styles.button, starting && { opacity: 0.6 }]}>
+          <Pressable accessibilityRole="button" accessibilityState={{ disabled: starting || isEnding }}
+            disabled={starting || isEnding} onPress={start} style={[styles.button, starting && { opacity: 0.6 }]}>
             <Text style={styles.buttonText}>{starting ? 'Starting…' : 'Start workout'}</Text>
           </Pressable>
           {error && !choice && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
         </View>
+        {history.length > 0 && <View style={styles.card}>
+          <Text style={styles.heading}>Workout history</Text>
+          {history.map((entry) => <Link key={entry.id} href={{ pathname: '/history/[id]', params: { id: entry.id } }} asChild>
+            <Pressable accessibilityRole="button" style={localStyles.historyEntry}>
+              <Text style={styles.text}>{entry.title}</Text>
+              <Text style={styles.muted}>{new Date(entry.startedAt).toLocaleDateString()} · {Math.max(0, Math.round((entry.completedAt - entry.startedAt) / 60000))} min · {entry.performedSetCount} performed sets</Text>
+            </Pressable>
+          </Link>)}
+        </View>}
       </ScrollView>
       <Modal visible={choice !== null} transparent animationType="fade" onRequestClose={cancel}>
         <SafeAreaView style={localStyles.backdrop}>
@@ -135,6 +144,7 @@ export default function HomeScreen() {
 }
 
 const localStyles = StyleSheet.create({
+  historyEntry: { minHeight: 48, paddingVertical: 12, gap: 6, borderBottomWidth: 1, borderBottomColor: pulse.border },
   backdrop: { flex: 1, backgroundColor: '#000000AA', padding: 24, justifyContent: 'center', alignItems: 'center' },
   dialog: { width: '100%', maxWidth: 480, maxHeight: '100%', flexShrink: 1 },
   discard: { backgroundColor: pulse.error },

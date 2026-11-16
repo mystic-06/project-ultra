@@ -8,7 +8,7 @@ import { useTraining } from '@/training/provider';
 import type { SetEntry, Training } from '@/training/workout';
 
 export default function WorkoutScreen() {
-  const { training, workout } = useTraining();
+  const { training, workout, isEnding } = useTraining();
   return (
     <SafeAreaView style={pulseStyles.screen} edges={['left', 'right', 'bottom']}>
       <KeyboardAvoidingView style={pulseStyles.screen} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
@@ -30,8 +30,11 @@ export default function WorkoutScreen() {
                 <Text style={[styles.columnLabel, styles.input]}>Reps</Text>
                 <Text style={[styles.columnLabel, styles.check]}>Check</Text>
               </View>
-              {exercise.sets.map((set, index) => <SetRow key={set.id} set={set} index={index} exerciseName={exercise.name} training={training} />)}
+              {exercise.sets.map((set, index) => <SetRow key={set.id} set={set} index={index} exerciseName={exercise.name} training={training} disabled={isEnding} />)}
             </View>)}
+            <Link href="/finish" asChild>
+              <Pressable style={pulseStyles.button} accessibilityRole="button"><Text style={pulseStyles.buttonText}>Review and finish</Text></Pressable>
+            </Link>
             <Link href="/" asChild>
               <Pressable style={styles.leave} accessibilityRole="button"><Text style={pulseStyles.text}>Back to Home</Text></Pressable>
             </Link>
@@ -42,7 +45,7 @@ export default function WorkoutScreen() {
   );
 }
 
-function SetRow({ set, index, exerciseName, training }: { set: SetEntry; index: number; exerciseName: string; training: Training }) {
+function SetRow({ set, index, exerciseName, training, disabled }: { set: SetEntry; index: number; exerciseName: string; training: Training; disabled: boolean }) {
   const repsInput = useRef<ComponentRef<typeof TextInput>>(null);
   const label = `${exerciseName}, set ${index + 1}`;
   const target = `${set.targetMin}–${set.targetMax} reps${set.type === 'warmup' ? ' · Warm-up' : ''}`;
@@ -55,16 +58,16 @@ function SetRow({ set, index, exerciseName, training }: { set: SetEntry; index: 
     <View style={styles.row}>
       <Text style={[pulseStyles.text, styles.identity]}>{index + 1}</Text>
       <Text style={[pulseStyles.muted, styles.previous]} accessibilityLabel="No previous result">—</Text>
-      <TextInput style={[styles.input, styles.field]} value={set.load} placeholder="—" placeholderTextColor={pulse.secondary}
+      <TextInput editable={!disabled} style={[styles.input, styles.field]} value={set.load} placeholder="—" placeholderTextColor={pulse.secondary}
         accessibilityLabel={`${label}, load in kilograms`} keyboardType="decimal-pad" selectTextOnFocus
         autoCorrect={false} returnKeyType="next" submitBehavior="submit"
         onSubmitEditing={() => repsInput.current?.focus()} onBlur={() => { void training.blurSet(set.id); }}
         onChangeText={(load) => { void training.editSet(set.id, { load }); }} />
-      <TextInput ref={repsInput} style={[styles.input, styles.field]} value={set.reps} placeholder="—" placeholderTextColor={pulse.secondary}
+      <TextInput editable={!disabled} ref={repsInput} style={[styles.input, styles.field]} value={set.reps} placeholder="—" placeholderTextColor={pulse.secondary}
         accessibilityLabel={`${label}, reps`} keyboardType="number-pad" selectTextOnFocus
         autoCorrect={false} returnKeyType="done"
         onBlur={() => { void training.blurSet(set.id); }} onChangeText={(reps) => { void training.editSet(set.id, { reps }); }} />
-      <Pressable accessibilityRole="checkbox" accessibilityLabel={`${label}, performed`} accessibilityState={{ checked: set.performed }}
+      <Pressable accessibilityRole="checkbox" accessibilityLabel={`${label}, performed`} disabled={disabled} accessibilityState={{ checked: set.performed, disabled }}
         onPress={() => { void training.setPerformed(set.id, !set.performed); }}
         style={[styles.check, styles.checkButton, set.performed && styles.checked]}>
         <Text style={[styles.checkText, set.performed && { color: pulse.onAccent }]}>{set.performed ? '✓' : '○'}</Text>

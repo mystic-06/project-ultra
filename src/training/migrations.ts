@@ -31,6 +31,7 @@ const migrations = [
     CHECK(performed = 0 OR (load IS NOT NULL AND reps IS NOT NULL)),
     UNIQUE(workout_exercise_id, position)
   );`,
+  `ALTER TABLE workouts ADD COLUMN completed_at INTEGER;`,
 ];
 
 export async function migrate(database: TrainingDatabase) {

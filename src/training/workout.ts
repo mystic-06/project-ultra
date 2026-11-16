@@ -22,7 +22,22 @@ export interface Workout {
   startedAt: number;
   exercises: { id: string; name: string; loadConvention: string; sets: SetEntry[] }[];
 }
-export interface TrainingSnapshot { workout: Workout | null; saveStatus: SaveStatus; hasIncompleteInput: boolean }
+export interface CompletedWorkout extends Workout { completedAt: number }
+export interface WorkoutSummary {
+  id: string; title: string; startedAt: number; completedAt: number; performedSetCount: number;
+}
+export function setResultState(set: SetEntry): 'performed' | 'unfinished' | 'untouched' {
+  return set.performed ? 'performed' : set.load !== '' || set.reps !== '' ? 'unfinished' : 'untouched';
+}
+export function summarizeWorkout(workout: Workout) {
+  const counts = { performed: 0, unfinished: 0, untouched: 0 };
+  workout.exercises.forEach((exercise) => exercise.sets.forEach((set) => { counts[setResultState(set)]++; }));
+  return counts;
+}
+export interface TrainingSnapshot {
+  workout: Workout | null; history: WorkoutSummary[]; isEnding: boolean;
+  saveStatus: SaveStatus; hasIncompleteInput: boolean;
+}
 
 export interface Training {
   getSnapshot(): TrainingSnapshot;
@@ -34,6 +49,9 @@ export interface Training {
   retrySet(id: string): Promise<boolean>;
   retryFailedSaves(): Promise<boolean>;
   blurSet(id: string): Promise<boolean>;
+  finishWorkout(expectedWorkoutId: string): Promise<void>;
+  discardWorkout(expectedWorkoutId: string): Promise<void>;
+  getCompletedWorkout(id: string): Promise<CompletedWorkout | null>;
   close(): Promise<void>;
 }
 
@@ -52,7 +70,9 @@ export function openTraining(database: TrainingDatabase): Promise<Training> {
 
 class TrainingModule implements Training {
   private workout: Workout | null = null;
-  private snapshot: TrainingSnapshot = { workout: null, saveStatus: 'saved', hasIncompleteInput: false };
+  private snapshot: TrainingSnapshot = { workout: null, history: [], isEnding: false, saveStatus: 'saved', hasIncompleteInput: false };
+  private history: WorkoutSummary[] = [];
+  private isEnding = false;
   private listeners = new Set<() => void>();
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
@@ -66,6 +86,8 @@ class TrainingModule implements Training {
       await migrate(database);
       const training = new TrainingModule(database);
       await training.load();
+      training.history = await training.readHistory();
+      training.publish();
       return training;
     } catch (error) {
       await database.close();
@@ -83,7 +105,7 @@ class TrainingModule implements Training {
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     const saveStatus = (['failed', 'saving', 'editing'] as const)
       .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
-    this.snapshot = { saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
+    this.snapshot = { history: this.history.map((entry) => ({ ...entry })), isEnding: this.isEnding, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
         ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
@@ -115,7 +137,10 @@ class TrainingModule implements Training {
   private async load() {
     const [workout] = await this.database.all<{ id: string; title: string; started_at: number }>(
       'SELECT id, title, started_at FROM workouts WHERE active = 1');
-    if (!workout) return;
+    if (workout) this.workout = await this.readWorkout(workout);
+  }
+
+  private async readWorkout(workout: { id: string; title: string; started_at: number }): Promise<Workout> {
     const exercises = await this.database.all<{ id: string; name: string; load_convention: string }>(
       'SELECT id, name, load_convention FROM workout_exercises WHERE workout_id = ? ORDER BY position', [workout.id]);
     const entries = [];
@@ -130,11 +155,64 @@ class TrainingModule implements Training {
           performed: set.performed === 1, revision: 0, status: 'saved',
           inputState: inspectInput(set.load ?? '', set.reps?.toString() ?? '').inputState, error: null })) });
     }
-    this.workout = { id: workout.id, title: workout.title, startedAt: workout.started_at, exercises: entries };
+    return { id: workout.id, title: workout.title, startedAt: workout.started_at, exercises: entries };
+  }
+
+  private readHistory() {
+    return this.database.all<WorkoutSummary>(`SELECT w.id, w.title, w.started_at AS startedAt,
+      w.completed_at AS completedAt, COUNT(CASE WHEN s.performed = 1 THEN 1 END) AS performedSetCount
+      FROM workouts w
+      LEFT JOIN workout_exercises e ON e.workout_id = w.id
+      LEFT JOIN workout_sets s ON s.workout_exercise_id = e.id
+      WHERE w.active = 0 AND w.completed_at IS NOT NULL
+      GROUP BY w.id ORDER BY w.completed_at DESC, w.id DESC`);
+  }
+
+  getCompletedWorkout(id: string): Promise<CompletedWorkout | null> {
+    return this.enqueue(async () => {
+      const [workout] = await this.database.all<{ id: string; title: string; started_at: number; completed_at: number }>(
+        'SELECT id, title, started_at, completed_at FROM workouts WHERE id = ? AND active = 0 AND completed_at IS NOT NULL', [id]);
+      return workout ? { ...await this.readWorkout(workout), completedAt: workout.completed_at } : null;
+    });
+  }
+
+  finishWorkout(expectedWorkoutId: string): Promise<void> {
+    return this.endWorkout(expectedWorkoutId, false);
+  }
+
+  /** Caller must obtain explicit discard confirmation for this exact active workout. */
+  discardWorkout(expectedWorkoutId: string): Promise<void> {
+    return this.endWorkout(expectedWorkoutId, true);
+  }
+
+  private endWorkout(expectedWorkoutId: string, discard: boolean): Promise<void> {
+    if (this.isEnding) return Promise.reject(new Error('A workout is already being saved.'));
+    this.isEnding = true;
     this.publish();
+    return this.enqueue(async () => {
+      if (this.workout?.id !== expectedWorkoutId) throw new Error('The active workout changed.');
+      const workout = this.workout;
+      if (!discard) {
+        const rows = workout.exercises.flatMap((exercise) => exercise.sets);
+        if (rows.some((row) => row.status !== 'saved')) throw new Error('Save or correct your latest entries before finishing.');
+        if (!rows.some((row) => row.performed)) throw new Error('No performed sets. Keep training or discard this workout.');
+      }
+      const completedAt = Date.now();
+      await this.transaction(async () => {
+        const [active] = await this.database.all<{ id: string }>('SELECT id FROM workouts WHERE active = 1');
+        if (active?.id !== expectedWorkoutId) throw new Error('The active workout changed.');
+        if (discard) await this.database.run('DELETE FROM workouts WHERE id = ? AND active = 1', [expectedWorkoutId]);
+        else await this.database.run('UPDATE workouts SET active = 0, completed_at = ? WHERE id = ? AND active = 1', [completedAt, expectedWorkoutId]);
+      });
+      if (!discard) this.history = [{ id: workout.id, title: workout.title, startedAt: workout.startedAt,
+        completedAt, performedSetCount: summarizeWorkout(workout).performed }, ...this.history];
+      this.workout = null;
+      this.retryIntent.clear();
+    }).finally(() => { this.isEnding = false; this.publish(); });
   }
 
   start(routine: Routine): Promise<boolean> {
+    if (this.isEnding) return Promise.resolve(false);
     return this.enqueue(async () => {
       if (this.workout) return false;
       const workout = await this.transaction(() => this.insertWorkout(routine));
@@ -146,6 +224,7 @@ class TrainingModule implements Training {
 
   /** Caller must obtain explicit discard confirmation for this exact active workout. */
   replaceActiveWorkout(routine: Routine, expectedWorkoutId: string): Promise<boolean> {
+    if (this.isEnding) return Promise.resolve(false);
     return this.enqueue(async () => {
       if (this.workout?.id !== expectedWorkoutId) {
         throw new Error('The active workout changed. Resume it before trying again.');
@@ -194,6 +273,7 @@ class TrainingModule implements Training {
   }
 
   editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps'>>) {
+    if (this.isEnding) return Promise.resolve(false);
     const row = this.row(id);
     Object.assign(row, patch);
     row.inputState = inspectInput(row.load, row.reps).inputState;
@@ -201,10 +281,12 @@ class TrainingModule implements Training {
   }
 
   setPerformed(id: string, performed: boolean) {
+    if (this.isEnding) return Promise.resolve(false);
     return this.save(this.row(id), performed);
   }
 
   retrySet(id: string) {
+    if (this.isEnding) return Promise.resolve(false);
     return this.save(this.row(id), this.retryIntent.get(id));
   }
 
@@ -215,6 +297,7 @@ class TrainingModule implements Training {
   }
 
   blurSet(id: string) {
+    if (this.isEnding) return Promise.resolve(false);
     const row = this.row(id);
     if (row.reps === '' || row.load === '') return this.save(row, false);
     return Promise.resolve(false);
