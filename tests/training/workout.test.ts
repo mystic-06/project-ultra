@@ -138,15 +138,13 @@ test('checking during a pending save keeps the check when a newer edit follows',
   assert.deepEqual([row.load, row.reps, row.performed], ['40', '7', true]);
 });
 
-test('clearing required reps leaves a checked set unfinished on blur and retains its load', async (t) => {
+test('clearing required reps unchecks a set without blur and retains its load', async (t) => {
   const { training, reopen } = await fixture(t);
   await training.start(upperStarter);
   const id = first(training).id;
   await training.editSet(id, { load: '40', reps: '6' });
   await training.setPerformed(id, true);
   await training.editSet(id, { reps: '' });
-  assert.equal(first(training).performed, true);
-  await training.blurSet(id);
   assert.equal(first(training).performed, false);
   const row = first(await reopen());
   assert.deepEqual([row.load, row.reps, row.performed], ['40', '', false]);
@@ -222,7 +220,7 @@ test('explicit uncheck works while incomplete text is being edited', async (t) =
   assert.deepEqual([row.load, row.reps, row.performed], ['40', '6', false]);
 });
 
-test('clearing reps during a pending check remains incomplete until blur, without a false storage failure', async (t) => {
+test('clearing reps during a pending check saves it unfinished without blur', async (t) => {
   const { training, control, reopen } = await fixture(t);
   await training.start(upperStarter);
   const id = first(training).id;
@@ -234,10 +232,9 @@ test('clearing reps during a pending check remains incomplete until blur, withou
   hold.release();
   await check;
   await clear;
-  assert.equal(first(training).status, 'editing');
+  assert.equal(first(training).status, 'saved');
   assert.equal(first(training).reps, '');
-  assert.equal(first(training).performed, true);
-  await training.blurSet(id);
+  assert.equal(first(training).performed, false);
   const row = first(await reopen());
   assert.deepEqual([row.load, row.reps, row.performed], ['40', '', false]);
 });

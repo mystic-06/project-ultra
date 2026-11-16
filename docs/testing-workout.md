@@ -14,7 +14,7 @@ The first slice supplies a three-exercise, seven-set weighted subset of UPPER: l
 2. Start the routine. Confirm the set number, target, warm-up label, blank Previous, kg input, reps input, and check remain distinct. Verify combined/displayed load hints.
 3. Enter `40` kg and `6` reps without checking. Wait for Saved. Go Home, resume, then force-stop and reopen. Confirm `40 × 6`, unchecked.
 4. Check the set. Wait for Saved. Force-stop and reopen. Confirm the same values and check. Change valid values and confirm the check remains.
-5. Clear required reps, leave the field, wait for Saved, and reopen. Confirm the load remains and the set is unfinished. Incomplete text such as `40.` should survive in-app navigation and never claim Saved; relaunch recovery of incomplete text is not guaranteed.
+5. Clear required reps without leaving the field. Confirm the set unchecks, wait for Saved, and reopen. Confirm the load remains and the set is unfinished. Incomplete text such as `40.` should survive in-app navigation and never claim Saved; relaunch recovery of incomplete text is not guaranteed.
 6. With the keyboard open, verify load → reps focus order, scrolling to the last exercise, and access to the focused row's target and check. Verify 48-point check/input targets, screen-reader labels, and larger text. Check Android back returns Home without ending the workout.
 7. Verify rapid edits settle on the newest values. Automated tests cover delayed/failed commits, Retry, atomic start/check, and concurrent starts; use a development-only persistence fault injection if visually checking failure feedback on device.
 

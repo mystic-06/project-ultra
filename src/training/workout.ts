@@ -149,7 +149,7 @@ class TrainingModule implements Training {
   editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps'>>) {
     const row = this.row(id);
     Object.assign(row, patch);
-    return this.save(row);
+    return this.save(row, patch.reps === '' ? false : undefined);
   }
 
   setPerformed(id: string, performed: boolean) {
