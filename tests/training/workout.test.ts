@@ -257,3 +257,115 @@ test('a newer edit made during a failing write remains available for Retry', asy
   assert.equal(await training.retrySet(id), true);
   assert.equal(first(await reopen()).load, '45');
 });
+
+test('a confirmed replacement starts a fresh routine snapshot and survives reopening', async (t) => {
+  const { training, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const original = training.getSnapshot().workout!;
+  await training.editSet(first(training).id, { load: '40', reps: '6' });
+  await training.setPerformed(first(training).id, true);
+  const selected = { ...upperStarter, id: 'selected-routine', title: 'Selected routine' };
+  assert.equal(await training.replaceActiveWorkout(selected, original.id), true);
+  const replacement = training.getSnapshot().workout!;
+  assert.notEqual(replacement.id, original.id);
+  assert.equal(replacement.title, 'Selected routine');
+  assert.deepEqual([first(training).load, first(training).reps, first(training).performed], ['', '', false]);
+  assert.equal((await reopen()).getSnapshot().workout!.id, replacement.id);
+});
+
+test('save feedback and Retry remain available away from the set row and use the latest values', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  const hold = control.holdNextCommit({ fail: true });
+  const saving = training.editSet(id, { load: '40', reps: '6' });
+  await hold.entered;
+  assert.equal(training.getSnapshot().saveStatus, 'saving');
+  hold.release();
+  await saving;
+  assert.equal(training.getSnapshot().saveStatus, 'failed');
+  control.failNextCommit();
+  await training.editSet(id, { load: '45' });
+  assert.equal(await training.retryFailedSaves(), true);
+  assert.equal(training.getSnapshot().saveStatus, 'saved');
+  assert.equal(first(await reopen()).load, '45');
+});
+
+test('a failed replacement preserves the original workout, checks, and incomplete text for retry', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40', reps: '6' });
+  await training.setPerformed(id, true);
+  await training.editSet(id, { load: '40.' });
+  const original = training.getSnapshot();
+  control.failNextCommit();
+  await assert.rejects(training.replaceActiveWorkout({ ...upperStarter, title: 'Replacement' }, original.workout!.id));
+  assert.deepEqual(training.getSnapshot(), original);
+  const recovered = await reopen();
+  assert.equal(recovered.getSnapshot().workout!.id, original.workout!.id);
+  assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['40', '6', true]);
+  assert.equal(await recovered.replaceActiveWorkout(upperStarter, original.workout!.id), true);
+});
+
+test('edits queued for the discarded workout cannot acknowledge a save after replacement', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const original = training.getSnapshot().workout!;
+  const id = first(training).id;
+  const hold = control.holdNextCommit();
+  const replace = training.replaceActiveWorkout(upperStarter, original.id);
+  await hold.entered;
+  const lateEdit = training.editSet(id, { load: '45', reps: '7' });
+  hold.release();
+  assert.equal(await replace, true);
+  assert.equal(await lateEdit, false);
+  const recovered = await reopen();
+  assert.notEqual(recovered.getSnapshot().workout!.id, original.id);
+  assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['', '', false]);
+});
+
+test('a second start leaves saved results and incomplete input intact until replacement is confirmed', async (t) => {
+  const { training, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  await training.editSet(first(training).id, { load: '40', reps: '6' });
+  await training.setPerformed(first(training).id, true);
+  await training.editSet(first(training).id, { load: '40.' });
+  const original = training.getSnapshot();
+  assert.equal(await training.start({ ...upperStarter, title: 'Another routine' }), false);
+  assert.deepEqual(training.getSnapshot(), original);
+  // Resume or Cancel in the choice UI issues no replacement command.
+  assert.equal(first(training).load, '40.');
+  const recovered = await reopen();
+  assert.equal(recovered.getSnapshot().workout!.id, original.workout!.id);
+  assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['40', '6', true]);
+});
+
+test('a confirmation for an older workout cannot discard its replacement', async (t) => {
+  const { training, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const originalId = training.getSnapshot().workout!.id;
+  await training.replaceActiveWorkout({ ...upperStarter, title: 'First replacement' }, originalId);
+  const replacementId = training.getSnapshot().workout!.id;
+  await assert.rejects(training.replaceActiveWorkout({ ...upperStarter, title: 'Stale request' }, originalId));
+  assert.equal(training.getSnapshot().workout!.id, replacementId);
+  assert.equal((await reopen()).getSnapshot().workout!.title, 'First replacement');
+});
+
+test('failed replacement leaves edits queued during the attempt attached to the original workout', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const originalId = training.getSnapshot().workout!.id;
+  const id = first(training).id;
+  const hold = control.holdNextCommit({ fail: true });
+  const replace = training.replaceActiveWorkout(upperStarter, originalId);
+  const rejected = assert.rejects(replace);
+  await hold.entered;
+  const edit = training.editSet(id, { load: '45', reps: '7' });
+  hold.release();
+  await rejected;
+  assert.equal(await edit, true);
+  const recovered = await reopen();
+  assert.equal(recovered.getSnapshot().workout!.id, originalId);
+  assert.deepEqual([first(recovered).load, first(recovered).reps], ['45', '7']);
+});

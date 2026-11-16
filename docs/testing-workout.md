@@ -6,11 +6,11 @@ Use Node 22.22.1 (`.nvmrc`). `npm test` compiles the training tests with `tsconf
 
 For a focused test, compile with `npx tsc -p tsconfig.test.json`, then run `node --experimental-test-isolation=none --test --test-name-pattern='failed check' .test-build/tests/training/workout.test.js`. Run `npx tsc --noEmit` and `npx expo lint` for application checks.
 
-The first slice supplies a three-exercise, seven-set weighted subset of UPPER: lat pulldown, chest press machine, and overhead press barbell. It is labelled as a starter, not the complete prescription. Routine authoring, bodyweight/L/R modes, equipment, previous-result lookup, rest, finish/history, and backup are later slices. The active workout remains resumable; this slice does not offer a destructive replacement action.
+The first slice supplies a three-exercise, seven-set weighted subset of UPPER: lat pulldown, chest press machine, and overhead press barbell. It is labelled as a starter, not the complete prescription. Routine authoring, bodyweight/L/R modes, equipment, previous-result lookup, rest, finish/history, and backup are later slices. The active workout remains resumable. Issue #2 adds confirmed discard-and-start and shared Resume/save feedback; see [the recovery walkthrough](testing-recovery.md).
 
 ## Physical Android walkthrough — required, not yet verified
 
-1. Launch in airplane mode after installing a compatible development build. Confirm Home, Manrope typography, and the supplied routine work offline.
+1. Launch in airplane mode after installing a preview/release APK with bundled JavaScript. Confirm Home, Manrope typography, and the supplied routine work offline.
 2. Start the routine. Confirm the set number, target, warm-up label, blank Previous, kg input, reps input, and check remain distinct. Verify combined/displayed load hints.
 3. Enter `40` kg and `6` reps without checking. Wait for Saved. Go Home, resume, then force-stop and reopen. Confirm `40 × 6`, unchecked.
 4. Check the set. Wait for Saved. Force-stop and reopen. Confirm the same values and check. Change valid values and confirm the check remains.

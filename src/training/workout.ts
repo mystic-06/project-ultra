@@ -21,15 +21,17 @@ export interface Workout {
   startedAt: number;
   exercises: { id: string; name: string; loadConvention: string; sets: SetEntry[] }[];
 }
-export interface TrainingSnapshot { workout: Workout | null }
+export interface TrainingSnapshot { workout: Workout | null; saveStatus: SaveStatus }
 
 export interface Training {
   getSnapshot(): TrainingSnapshot;
   subscribe(listener: () => void): () => void;
   start(routine: Routine): Promise<boolean>;
+  replaceActiveWorkout(routine: Routine, expectedWorkoutId: string): Promise<boolean>;
   editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps'>>): Promise<boolean>;
   setPerformed(id: string, performed: boolean): Promise<boolean>;
   retrySet(id: string): Promise<boolean>;
+  retryFailedSaves(): Promise<boolean>;
   blurSet(id: string): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -40,7 +42,7 @@ export function openTraining(database: TrainingDatabase): Promise<Training> {
 
 class TrainingModule implements Training {
   private workout: Workout | null = null;
-  private snapshot: TrainingSnapshot = { workout: null };
+  private snapshot: TrainingSnapshot = { workout: null, saveStatus: 'saved' };
   private listeners = new Set<() => void>();
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
@@ -68,7 +70,10 @@ class TrainingModule implements Training {
   };
 
   private publish() {
-    this.snapshot = { workout: this.workout ? {
+    const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
+    const saveStatus = (['failed', 'saving', 'editing'] as const)
+      .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
+    this.snapshot = { saveStatus, workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
         ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
@@ -84,11 +89,12 @@ class TrainingModule implements Training {
     return result;
   }
 
-  private async transaction(action: () => Promise<void>) {
+  private async transaction<T>(action: () => Promise<T>): Promise<T> {
     await this.database.exec('BEGIN IMMEDIATE');
     try {
-      await action();
+      const result = await action();
       await this.database.exec('COMMIT');
+      return result;
     } catch (error) {
       await this.database.exec('ROLLBACK');
       throw error;
@@ -120,23 +126,53 @@ class TrainingModule implements Training {
   start(routine: Routine): Promise<boolean> {
     return this.enqueue(async () => {
       if (this.workout) return false;
-      await this.transaction(async () => {
-        const [{ id }] = await this.database.all<{ id: string }>('SELECT lower(hex(randomblob(16))) AS id');
-        await this.database.run('INSERT INTO workouts(id, routine_id, title, started_at, active) VALUES (?, ?, ?, ?, 1)',
-          [id, routine.id, routine.title, Date.now()]);
-        for (const [position, exercise] of routine.exercises.entries()) {
-          const exerciseId = `${id}:${position}`;
-          await this.database.run('INSERT INTO workout_exercises(id, workout_id, exercise_id, name, load_convention, position) VALUES (?, ?, ?, ?, ?, ?)',
-            [exerciseId, id, exercise.exerciseId, exercise.name, exercise.loadConvention, position]);
-          for (const [setPosition, set] of exercise.sets.entries()) {
-            await this.database.run('INSERT INTO workout_sets(id, workout_exercise_id, position, type, target_min, target_max) VALUES (?, ?, ?, ?, ?, ?)',
-              [`${exerciseId}:${setPosition}`, exerciseId, setPosition, set.type, set.targetMin, set.targetMax]);
-          }
-        }
-      });
-      await this.load();
+      const workout = await this.transaction(() => this.insertWorkout(routine));
+      this.workout = workout;
+      this.publish();
       return true;
     });
+  }
+
+  /** Caller must obtain explicit discard confirmation for this exact active workout. */
+  replaceActiveWorkout(routine: Routine, expectedWorkoutId: string): Promise<boolean> {
+    return this.enqueue(async () => {
+      if (this.workout?.id !== expectedWorkoutId) {
+        throw new Error('The active workout changed. Resume it before trying again.');
+      }
+      const workout = await this.transaction(async () => {
+        const [active] = await this.database.all<{ id: string }>('SELECT id FROM workouts WHERE active = 1');
+        if (active?.id !== expectedWorkoutId) throw new Error('The active workout changed.');
+        await this.database.run('DELETE FROM workouts WHERE id = ? AND active = 1', [expectedWorkoutId]);
+        return this.insertWorkout(routine);
+      });
+      this.workout = workout;
+      this.retryIntent.clear();
+      this.publish();
+      return true;
+    });
+  }
+
+  private async insertWorkout(routine: Routine): Promise<Workout> {
+    const [{ id }] = await this.database.all<{ id: string }>('SELECT lower(hex(randomblob(16))) AS id');
+    const startedAt = Date.now();
+    await this.database.run('INSERT INTO workouts(id, routine_id, title, started_at, active) VALUES (?, ?, ?, ?, 1)',
+      [id, routine.id, routine.title, startedAt]);
+    const exercises: Workout['exercises'] = [];
+    for (const [position, exercise] of routine.exercises.entries()) {
+      const exerciseId = `${id}:${position}`;
+      await this.database.run('INSERT INTO workout_exercises(id, workout_id, exercise_id, name, load_convention, position) VALUES (?, ?, ?, ?, ?, ?)',
+        [exerciseId, id, exercise.exerciseId, exercise.name, exercise.loadConvention, position]);
+      const sets: SetEntry[] = [];
+      for (const [setPosition, set] of exercise.sets.entries()) {
+        const setId = `${exerciseId}:${setPosition}`;
+        await this.database.run('INSERT INTO workout_sets(id, workout_exercise_id, position, type, target_min, target_max) VALUES (?, ?, ?, ?, ?, ?)',
+          [setId, exerciseId, setPosition, set.type, set.targetMin, set.targetMax]);
+        sets.push({ id: setId, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
+          load: '', reps: '', performed: false, revision: 0, status: 'saved', error: null });
+      }
+      exercises.push({ id: exerciseId, name: exercise.name, loadConvention: exercise.loadConvention, sets });
+    }
+    return { id, title: routine.title, startedAt, exercises };
   }
 
   private row(id: string) {
@@ -160,6 +196,12 @@ class TrainingModule implements Training {
     return this.save(this.row(id), this.retryIntent.get(id));
   }
 
+  async retryFailedSaves() {
+    const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
+    const results = await Promise.all(rows.filter((row) => row.status === 'failed').map((row) => this.retrySet(row.id)));
+    return results.every(Boolean);
+  }
+
   blurSet(id: string) {
     const row = this.row(id);
     if (row.reps === '' || row.load === '') return this.save(row, false);
@@ -167,6 +209,7 @@ class TrainingModule implements Training {
   }
 
   private save(row: SetEntry, performed?: boolean): Promise<boolean> {
+    const workoutId = this.workout?.id;
     const revision = ++row.revision;
     this.retryIntent.set(row.id, performed);
     const { load, reps } = row;
@@ -184,6 +227,7 @@ class TrainingModule implements Training {
     row.error = null;
     this.publish();
     return this.enqueue(async () => {
+      if (this.workout?.id !== workoutId) return false;
       // Earlier queued checks/unchecks may have changed confirmation since this edit.
       if (performed === undefined && row.performed && !complete) {
         if (row.revision === revision) {
