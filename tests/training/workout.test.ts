@@ -304,7 +304,7 @@ test('a failed replacement preserves the original workout, checks, and incomplet
   assert.deepEqual(training.getSnapshot(), original);
   const recovered = await reopen();
   assert.equal(recovered.getSnapshot().workout!.id, original.workout!.id);
-  assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['40', '6', true]);
+  assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['40', '6', false]);
   assert.equal(await recovered.replaceActiveWorkout(upperStarter, original.workout!.id), true);
 });
 
@@ -338,7 +338,7 @@ test('a second start leaves saved results and incomplete input intact until repl
   assert.equal(first(training).load, '40.');
   const recovered = await reopen();
   assert.equal(recovered.getSnapshot().workout!.id, original.workout!.id);
-  assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['40', '6', true]);
+  assert.deepEqual([first(recovered).load, first(recovered).reps, first(recovered).performed], ['40', '6', false]);
 });
 
 test('a confirmation for an older workout cannot discard its replacement', async (t) => {
@@ -476,4 +476,67 @@ test('a failed unit setting keeps the old unit and can be retried', async (t) =>
   assert.equal(training.getSnapshot().loadUnit, 'kg');
   await training.setLoadUnit('lb');
   assert.equal(first(await reopen()).load, '22.05');
+});
+
+test('unilateral results, set type and effort survive reopening with blank sides distinct from zero', async (t) => {
+  const { training, reopen } = await fixture(t);
+  const routine = { ...upperStarter, exercises: [{ ...upperStarter.exercises[0], entryMode: 'unilateral' as const }] };
+  await training.start(routine);
+  const id = first(training).id;
+  await training.editSet(id, { load: '12.5', repsLeft: '0', repsRight: '8', type: 'drop', rpe: '8.5' });
+  assert.equal(await training.setPerformed(id, true), true);
+  const recovered = await reopen();
+  const row = first(recovered);
+  assert.deepEqual([row.repsLeft, row.repsRight, row.type, row.rpe, row.performed], ['0', '8', 'drop', '8.5', true]);
+  await recovered.editSet(id, { repsLeft: '' });
+  assert.equal(first(recovered).performed, true);
+  assert.equal(first(await reopen()).repsLeft, '');
+});
+
+test('invalid edit after a pending check unchecks durably and needs an explicit new check', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40', reps: '6' });
+  const hold = control.holdNextCommit();
+  const check = training.setPerformed(id, true);
+  await hold.entered;
+  const invalid = training.editSet(id, { rpe: '8.3' });
+  assert.equal(first(training).performed, false);
+  const correction = training.editSet(id, { rpe: '8.5' });
+  hold.release();
+  await Promise.all([check, invalid, correction]);
+  assert.equal(first(training).performed, false);
+  const recovered = await reopen();
+  assert.deepEqual([first(recovered).performed, first(recovered).rpe], [false, '8.5']);
+  assert.equal(await recovered.setPerformed(id, true), true);
+});
+
+test('unilateral completion requires a positive side and rejects invalid effort', async (t) => {
+  const { training } = await fixture(t);
+  await training.start({ ...upperStarter, exercises: [{ ...upperStarter.exercises[0], entryMode: 'unilateral' }] });
+  const id = first(training).id;
+  await training.editSet(id, { load: '0', repsLeft: '0', repsRight: '' });
+  assert.equal(await training.setPerformed(id, true), false);
+  await training.editSet(id, { repsRight: '1', rpe: '10.5' });
+  assert.equal(await training.setPerformed(id, true), false);
+  await training.editSet(id, { rpe: '10' });
+  assert.equal(await training.setPerformed(id, true), true);
+  await training.editSet(id, { repsRight: '-1' });
+  assert.equal(first(training).performed, false);
+  assert.equal(first(training).repsRight, '-1');
+});
+
+test('a failed invalid-edit uncheck is retried with the latest corrected values', async (t) => {
+  const { training, control, reopen } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40', reps: '6' });
+  await training.setPerformed(id, true);
+  control.failNextCommit();
+  assert.equal(await training.editSet(id, { load: '40.' }), false);
+  assert.equal(first(training).performed, false);
+  await training.editSet(id, { load: '45' });
+  const recovered = await reopen();
+  assert.deepEqual([first(recovered).load, first(recovered).performed], ['45', false]);
 });

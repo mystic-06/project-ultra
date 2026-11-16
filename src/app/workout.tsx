@@ -59,7 +59,7 @@ export default function WorkoutScreen() {
                 <EditAction label={`Replace ${exercise.name}`} disabled={busy} onPress={() => router.push({ pathname: '/exercises', params: { workoutId: workout.id, replaceId: exercise.id } })} />
                 <EditAction label={`Remove ${exercise.name}`} disabled={busy} onPress={() => setConfirmation({ label: `Remove ${exercise.name}`, change: { type: 'remove-exercise', exerciseId: exercise.id } })} />
               </EditActions>}
-              {exercise.entryMode !== 'weighted' && <Text style={pulseStyles.muted}>{exercise.entryMode} logging is not available yet. You can arrange this exercise and its sets.</Text>}
+              {!['weighted', 'unilateral'].includes(exercise.entryMode) && <Text style={pulseStyles.muted}>{exercise.entryMode} logging is not available yet. You can arrange this exercise and its sets.</Text>}
               <View style={styles.row} accessibilityElementsHidden>
                 <Text style={[styles.columnLabel, styles.identity]}>Set</Text>
                 <Text style={[styles.columnLabel, styles.previous]}>Previous</Text>
@@ -68,8 +68,8 @@ export default function WorkoutScreen() {
                 <Text style={[styles.columnLabel, styles.check]}>Check</Text>
               </View>
               {exercise.sets.map((set, index) => <View key={set.id}>
-                {exercise.entryMode === 'weighted'
-                  ? <SetRow set={set} index={index} exerciseName={exercise.name} training={training} loadUnit={loadUnit} disabled={busy} />
+                {['weighted', 'unilateral'].includes(exercise.entryMode)
+                  ? <SetRow unilateral={exercise.entryMode === 'unilateral'} set={set} index={index} exerciseName={exercise.name} training={training} loadUnit={loadUnit} disabled={busy} />
                   : <Text style={pulseStyles.text}>Set {index + 1} · Not entered</Text>}
                 {managing && <EditActions>
                   <EditAction label={`Move set ${index + 1} up`} disabled={busy || index === 0} onPress={() => void apply({ type: 'move-set', exerciseId: exercise.id, setId: set.id, direction: -1 })} />
@@ -93,7 +93,7 @@ export default function WorkoutScreen() {
   );
 }
 
-function SetRow({ set, index, exerciseName, training, loadUnit, disabled }: { set: SetEntry; index: number; exerciseName: string; training: Training; loadUnit: 'kg' | 'lb'; disabled: boolean }) {
+function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilateral }: { set: SetEntry; index: number; exerciseName: string; training: Training; loadUnit: 'kg' | 'lb'; disabled: boolean; unilateral: boolean }) {
   const repsInput = useRef<ComponentRef<typeof TextInput>>(null);
   const label = `${exerciseName}, set ${index + 1}`;
   const target = `${set.targetMin === 0 && set.targetMax === 0 ? 'No rep target' : `${set.targetMin}–${set.targetMax} reps`}${set.type === 'warmup' ? ' · Warm-up' : set.type === 'drop' ? ' · Drop set' : ''}`;
@@ -111,15 +111,29 @@ function SetRow({ set, index, exerciseName, training, loadUnit, disabled }: { se
         autoCorrect={false} returnKeyType="next" submitBehavior="submit"
         onSubmitEditing={() => repsInput.current?.focus()} onBlur={() => { void training.blurSet(set.id); }}
         onChangeText={(load) => { void training.editSet(set.id, { load }); }} />
-      <TextInput editable={!disabled} ref={repsInput} style={[styles.input, styles.field]} value={set.reps} placeholder="—" placeholderTextColor={pulse.secondary}
+      {unilateral ? <View style={[styles.input, styles.field, styles.sides]}>
+        <TextInput editable={!disabled} ref={repsInput} style={styles.side} value={set.repsLeft} placeholder="L" placeholderTextColor={pulse.secondary}
+          accessibilityLabel={`${label}, left reps`} keyboardType="number-pad" onChangeText={(repsLeft) => { void training.editSet(set.id, { repsLeft }); }} />
+        <Text style={pulseStyles.muted}>/</Text>
+        <TextInput editable={!disabled} style={styles.side} value={set.repsRight} placeholder="R" placeholderTextColor={pulse.secondary}
+          accessibilityLabel={`${label}, right reps`} keyboardType="number-pad" onChangeText={(repsRight) => { void training.editSet(set.id, { repsRight }); }} />
+      </View> : <TextInput editable={!disabled} ref={repsInput} style={[styles.input, styles.field]} value={set.reps} placeholder="—" placeholderTextColor={pulse.secondary}
         accessibilityLabel={`${label}, reps`} keyboardType="number-pad" selectTextOnFocus
         autoCorrect={false} returnKeyType="done"
-        onBlur={() => { void training.blurSet(set.id); }} onChangeText={(reps) => { void training.editSet(set.id, { reps }); }} />
+        onBlur={() => { void training.blurSet(set.id); }} onChangeText={(reps) => { void training.editSet(set.id, { reps }); }} />}
       <Pressable accessibilityRole="checkbox" accessibilityLabel={`${label}, performed`} disabled={disabled} accessibilityState={{ checked: set.performed, disabled }}
         onPress={() => { void training.setPerformed(set.id, !set.performed); }}
         style={[styles.check, styles.checkButton, set.performed && styles.checked]}>
         <Text style={[styles.checkText, set.performed && { color: pulse.onAccent }]}>{set.performed ? '✓' : '○'}</Text>
       </Pressable>
+    </View>
+    <View style={styles.options}>
+      {(['normal', 'warmup', 'drop'] as const).map((type) => <Pressable key={type} accessibilityRole="radio" accessibilityState={{ checked: set.type === type, disabled }} disabled={disabled}
+        accessibilityLabel={`${label}, ${type === 'warmup' ? 'Warm-up' : type}`} onPress={() => { void training.editSet(set.id, { type }); }} style={[styles.typeButton, set.type === type && styles.selectedType]}>
+        <Text style={pulseStyles.text}>{type === 'warmup' ? 'Warm-up' : type === 'drop' ? 'Drop' : 'Normal'}</Text>
+      </Pressable>)}
+      <TextInput editable={!disabled} style={styles.rpe} value={set.rpe} placeholder="RPE" placeholderTextColor={pulse.secondary}
+        accessibilityLabel={`${label}, RPE`} keyboardType="decimal-pad" onChangeText={(rpe) => { void training.editSet(set.id, { rpe }); }} />
     </View>
     <View style={styles.feedback}>
       <Text accessibilityLiveRegion="polite" style={[styles.status, set.status === 'failed' && pulseStyles.error]}>{status}</Text>
@@ -131,6 +145,12 @@ function SetRow({ set, index, exerciseName, training, loadUnit, disabled }: { se
 }
 
 const styles = StyleSheet.create({
+  sides: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 2 },
+  side: { flex: 1, minWidth: 0, color: pulse.text, textAlign: 'center', fontSize: 16, padding: 0 },
+  options: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginLeft: 34 },
+  typeButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8, borderRadius: 8, backgroundColor: pulse.input },
+  selectedType: { borderWidth: 1, borderColor: pulse.accent },
+  rpe: { minHeight: 44, minWidth: 60, padding: 8, borderRadius: 8, backgroundColor: pulse.input, color: pulse.text },
   exercise: { gap: 8, borderBottomWidth: 1, borderBottomColor: pulse.border, paddingBottom: 20 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   columnLabel: { color: pulse.secondary, fontFamily: 'Manrope', fontSize: 12, textAlign: 'center' },

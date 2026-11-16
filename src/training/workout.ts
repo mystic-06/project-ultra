@@ -26,6 +26,9 @@ export interface SetEntry {
   originalLoad: string;
   loadUnit: LoadUnit;
   reps: string;
+  repsLeft: string;
+  repsRight: string;
+  rpe: string;
   performed: boolean;
   revision: number;
   status: SaveStatus;
@@ -44,7 +47,7 @@ export interface WorkoutSummary {
   id: string; title: string; startedAt: number; completedAt: number; performedSetCount: number;
 }
 export function setResultState(set: SetEntry): 'performed' | 'unfinished' | 'untouched' {
-  return set.performed ? 'performed' : set.load !== '' || set.reps !== '' ? 'unfinished' : 'untouched';
+  return set.performed ? 'performed' : set.load !== '' || set.reps !== '' || set.repsLeft !== '' || set.repsRight !== '' || set.rpe !== '' ? 'unfinished' : 'untouched';
 }
 export function summarizeWorkout(workout: Workout) {
   const counts = { performed: 0, unfinished: 0, untouched: 0 };
@@ -86,7 +89,7 @@ export interface Training {
   adaptWorkout(expectedWorkoutId: string, change: WorkoutChange): Promise<void>;
   start(routine?: Routine): Promise<boolean>;
   replaceActiveWorkout(routine: Routine, expectedWorkoutId: string): Promise<boolean>;
-  editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps'>>): Promise<boolean>;
+  editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps' | 'repsLeft' | 'repsRight' | 'rpe' | 'type'>>): Promise<boolean>;
   setPerformed(id: string, performed: boolean): Promise<boolean>;
   retrySet(id: string): Promise<boolean>;
   retryFailedSaves(): Promise<boolean>;
@@ -97,12 +100,17 @@ export interface Training {
   close(): Promise<void>;
 }
 
-function inspectInput(load: string, reps: string) {
+function inspectInput(set: Pick<SetEntry, 'load' | 'reps' | 'repsLeft' | 'repsRight' | 'rpe'>, mode: EntryMode) {
+  const { load, reps, repsLeft, repsRight, rpe } = set;
   const validLoad = load === '' || (/^\d+(?:\.\d{1,2})?$/.test(load) && Number.isFinite(Number(load)));
-  const validReps = reps === '' || (/^\d+$/.test(reps) && Number.isSafeInteger(Number(reps)) && Number(reps) > 0);
-  const inputValid = validLoad && validReps;
-  const complete = inputValid && load !== '' && reps !== '';
-  const inputState: SetEntry['inputState'] = load === '' && reps === '' ? 'empty' : complete ? 'ready' : 'incomplete';
+  const whole = (value: string) => value === '' || (/^\d+$/.test(value) && Number.isSafeInteger(Number(value)));
+  const validReps = mode === 'unilateral' ? whole(repsLeft) && whole(repsRight) : whole(reps) && (reps === '' || Number(reps) > 0);
+  const validRpe = rpe === '' || (/^\d+(?:\.\d)?$/.test(rpe) && Number(rpe) >= 1 && Number(rpe) <= 10 && Number(rpe) * 2 % 1 === 0);
+  const inputValid = validLoad && validReps && validRpe;
+  const hasReps = mode === 'unilateral' ? Number(repsLeft) > 0 || Number(repsRight) > 0 : reps !== '';
+  const complete = inputValid && load !== '' && hasReps;
+  const empty = load === '' && (mode === 'unilateral' ? repsLeft === '' && repsRight === '' : reps === '') && rpe === '';
+  const inputState: SetEntry['inputState'] = empty ? 'empty' : complete ? 'ready' : 'incomplete';
   return { inputValid, complete, inputState };
 }
 
@@ -112,6 +120,9 @@ export function openTraining(database: TrainingDatabase, now: () => number = Dat
 
 class TrainingModule implements Training {
   private workout: Workout | null = null;
+  private uncheckRevision = new Map<string, number>();
+  private pendingChecks = new Set<string>();
+  private pendingUnchecks = new Map<string, number>();
   private snapshot: TrainingSnapshot = { routines: [], routineDraft: null, loadUnit: 'kg', equipmentSetups: [], restSettings: { automatic: true, defaultSeconds: 90 }, restDeadline: null, workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
   private loadUnit: LoadUnit = 'kg';
   private history: WorkoutSummary[] = [];
@@ -309,13 +320,13 @@ class TrainingModule implements Training {
     for (const exercise of exercises) {
       const sets = await this.database.all<{
         id: string; type: SetEntry['type']; target_min: number; target_max: number;
-        load: string | null; load_unit: LoadUnit; reps: number | null; performed: number; equipment_setup_id: string | null;
+        load: string | null; load_unit: LoadUnit; reps: number | null; reps_left: number | null; reps_right: number | null; rpe: string | null; performed: number; equipment_setup_id: string | null;
       }>('SELECT * FROM workout_sets WHERE workout_exercise_id = ? ORDER BY position', [exercise.id]);
       entries.push({ id: exercise.id, exerciseId: exercise.exercise_id, equipmentSetupId: exercise.equipment_setup_id, entryMode: exercise.entry_mode, name: exercise.name, loadConvention: exercise.load_convention, restSeconds: exercise.rest_seconds ?? undefined,
         sets: sets.map((set): SetEntry => ({ id: set.id, equipmentSetupId: set.equipment_setup_id, type: set.type, targetMin: set.target_min,
-          targetMax: set.target_max, originalLoad: set.load ?? '', loadUnit: set.load_unit, load: formatLoad(set.load ?? '', set.load_unit, this.loadUnit), reps: set.reps?.toString() ?? '',
+          targetMax: set.target_max, originalLoad: set.load ?? '', loadUnit: set.load_unit, load: formatLoad(set.load ?? '', set.load_unit, this.loadUnit), reps: set.reps?.toString() ?? '', repsLeft: set.reps_left?.toString() ?? '', repsRight: set.reps_right?.toString() ?? '', rpe: set.rpe ?? '',
           performed: set.performed === 1, revision: 0, status: 'saved',
-          inputState: inspectInput(set.load ?? '', set.reps?.toString() ?? '').inputState, error: null })) });
+          inputState: inspectInput({ load: set.load ?? '', reps: set.reps?.toString() ?? '', repsLeft: set.reps_left?.toString() ?? '', repsRight: set.reps_right?.toString() ?? '', rpe: set.rpe ?? '' }, exercise.entry_mode).inputState, error: null })) });
     }
     return { id: workout.id, title: workout.title, startedAt: workout.started_at, exercises: entries };
   }
@@ -534,7 +545,7 @@ class TrainingModule implements Training {
           [setId, exerciseId, setPosition, set.type, set.targetMin, set.targetMax]);
         await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE id = ?', [equipmentSetupId, setId]);
         sets.push({ id: setId, equipmentSetupId, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
-          load: '', originalLoad: '', loadUnit: 'kg', reps: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null });
+          load: '', originalLoad: '', loadUnit: 'kg', reps: '', repsLeft: '', repsRight: '', rpe: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null });
       }
       exercises.push({ id: exerciseId, exerciseId: exercise.exerciseId, equipmentSetupId, entryMode: exercise.entryMode ?? 'weighted', name: exercise.name, loadConvention: exercise.loadConvention, restSeconds: exercise.restSeconds, sets });
     }
@@ -547,7 +558,7 @@ class TrainingModule implements Training {
     return row;
   }
 
-  editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps'>>) {
+  editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'reps' | 'repsLeft' | 'repsRight' | 'rpe' | 'type'>>) {
     if (this.isEnding || this.isAdapting) return Promise.resolve(false);
     const row = this.row(id);
     if (!row) return Promise.resolve(false);
@@ -557,8 +568,9 @@ class TrainingModule implements Training {
       row.originalLoad = patch.load;
       row.loadUnit = this.loadUnit;
     }
-    row.inputState = inspectInput(row.load, row.reps).inputState;
-    return this.save(row, patch.reps === '' ? false : undefined);
+    const input = inspectInput(row, this.entryMode(row));
+    row.inputState = input.inputState;
+    return this.save(row, !input.complete && (row.performed || this.pendingChecks.has(id)) ? false : undefined);
   }
 
   setPerformed(id: string, performed: boolean) {
@@ -583,13 +595,17 @@ class TrainingModule implements Training {
     if (this.isEnding || this.isAdapting) return Promise.resolve(false);
     const row = this.row(id);
     if (!row) return Promise.resolve(false);
-    if (row.reps === '' || row.load === '') return this.save(row, false);
-    if (inspectInput(row.load, row.reps).inputValid) { row.load = formatLoad(row.originalLoad, row.loadUnit, this.loadUnit); this.publish(); }
+    if (!inspectInput(row, this.entryMode(row)).complete && (row.performed || this.pendingChecks.has(id))) return this.save(row, false);
+    if (inspectInput(row, this.entryMode(row)).inputValid) { row.load = formatLoad(row.originalLoad, row.loadUnit, this.loadUnit); this.publish(); }
     return Promise.resolve(false);
   }
 
+  private entryMode(row: SetEntry): EntryMode {
+    return this.workout?.exercises.find((exercise) => exercise.sets.some((set) => set.id === row.id))?.entryMode ?? 'weighted';
+  }
+
   private supportsEntry(row: SetEntry) {
-    if (this.workout?.exercises.find((exercise) => exercise.sets.some((set) => set.id === row.id))?.entryMode === 'weighted') return true;
+    if (['weighted', 'unilateral'].includes(this.entryMode(row))) return true;
     row.error = 'Logging for this entry mode is not available yet.';
     this.publish();
     return false;
@@ -598,19 +614,21 @@ class TrainingModule implements Training {
   private save(row: SetEntry, performed?: boolean): Promise<boolean> {
     if (!this.supportsEntry(row)) return Promise.resolve(false);
     const workoutId = this.workout?.id;
-    const { load, reps, originalLoad, loadUnit } = row;
-    const { inputValid, complete } = inspectInput(load, reps);
+    const { originalLoad, loadUnit, reps, repsLeft, repsRight, rpe, type } = row;
+    const { inputValid, complete } = inspectInput(row, this.entryMode(row));
     // Checking validates performance; it must not invalidate an existing save acknowledgement.
     if (performed === true && (!inputValid || !complete)) {
-      row.error = 'Enter a nonnegative load (up to 2 decimals) and positive whole reps.';
+      row.error = 'Enter a nonnegative load, valid reps, and optional RPE from 1 to 10 in half steps.';
       this.publish();
       return Promise.resolve(false);
     }
     const revision = ++row.revision;
+    if (performed === false) { this.uncheckRevision.set(row.id, revision); this.pendingUnchecks.set(row.id, revision); row.performed = false; }
+    if (performed === true) this.pendingChecks.add(row.id);
     this.retryIntent.set(row.id, performed);
     if (!inputValid && performed !== false) {
       row.status = 'editing';
-      row.error = 'Enter a nonnegative load (up to 2 decimals) and positive whole reps.';
+      row.error = 'Enter a nonnegative load, valid reps, and optional RPE from 1 to 10 in half steps.';
       this.publish();
       return Promise.resolve(false);
     }
@@ -619,15 +637,6 @@ class TrainingModule implements Training {
     this.publish();
     return this.enqueue(async () => {
       if (this.workout?.id !== workoutId) return false;
-      // Earlier queued checks/unchecks may have changed confirmation since this edit.
-      if (performed === undefined && row.performed && !complete) {
-        if (row.revision === revision) {
-          row.status = 'editing';
-          row.error = 'Leave the field to mark this incomplete set unfinished.';
-        }
-        this.publish();
-        return false;
-      }
       try {
         const exercise = this.workout?.exercises.find((entry) => entry.sets.some((set) => set.id === row.id));
         const deadline = performed === true && !row.performed && this.restSettings.automatic
@@ -635,19 +644,21 @@ class TrainingModule implements Training {
         await this.transaction(async () => {
           if (deadline !== null) await this.database.run('UPDATE workouts SET rest_deadline = ? WHERE id = ? AND active = 1', [deadline, workoutId!]);
           // Clear confirmation first so an intentionally emptied field satisfies the invariant.
-          if (performed === false) {
+          if (performed === false || (this.pendingUnchecks.get(row.id) ?? Infinity) <= revision) {
             await this.database.run('UPDATE workout_sets SET performed = 0 WHERE id = ?', [row.id]);
           }
           if (inputValid) {
-            await this.database.run('UPDATE workout_sets SET load = ?, load_unit = ?, reps = ? WHERE id = ?',
-              [originalLoad === '' ? null : originalLoad, loadUnit, reps === '' ? null : Number(reps), row.id]);
+            await this.database.run('UPDATE workout_sets SET load = ?, load_unit = ?, reps = ?, reps_left = ?, reps_right = ?, rpe = ?, type = ? WHERE id = ?',
+              [originalLoad === '' ? null : originalLoad, loadUnit, reps === '' ? null : Number(reps), repsLeft === '' ? null : Number(repsLeft), repsRight === '' ? null : Number(repsRight), rpe === '' ? null : rpe, type, row.id]);
           }
           if (performed !== undefined) {
             await this.database.run('UPDATE workout_sets SET performed = ? WHERE id = ?', [performed ? 1 : 0, row.id]);
           }
         });
+        if ((this.pendingUnchecks.get(row.id) ?? Infinity) <= revision) this.pendingUnchecks.delete(row.id);
+        if (performed === true) this.pendingChecks.delete(row.id);
         if (deadline !== null) this.restDeadline = deadline;
-        if (performed !== undefined) row.performed = performed;
+        if (performed !== undefined && (performed === false || (this.uncheckRevision.get(row.id) ?? 0) <= revision)) row.performed = performed;
         if (row.revision === revision) {
           row.status = inputValid ? 'saved' : 'editing';
           row.error = inputValid ? null : 'Incomplete input is kept here but is not saved.';
@@ -655,6 +666,7 @@ class TrainingModule implements Training {
         this.publish();
         return true;
       } catch {
+        if (performed === true) this.pendingChecks.delete(row.id);
         if (row.revision === revision) { row.status = 'failed'; row.error = 'Could not save. Your latest input is kept here. Retry to save it.'; }
         this.publish();
         return false;

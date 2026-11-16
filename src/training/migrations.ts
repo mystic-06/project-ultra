@@ -62,6 +62,21 @@ const migrations = [
   `ALTER TABLE workout_sets ADD COLUMN load_unit TEXT NOT NULL DEFAULT 'kg' CHECK(load_unit IN ('kg', 'lb'));
   CREATE TABLE load_settings (id INTEGER PRIMARY KEY CHECK(id = 1), unit TEXT NOT NULL CHECK(unit IN ('kg', 'lb')));
   INSERT INTO load_settings VALUES (1, 'kg');`,
+  `CREATE TABLE workout_sets_new (
+    id TEXT PRIMARY KEY NOT NULL, workout_exercise_id TEXT NOT NULL REFERENCES workout_exercises(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL, type TEXT NOT NULL CHECK(type IN ('normal', 'warmup', 'drop')),
+    target_min INTEGER NOT NULL, target_max INTEGER NOT NULL, load TEXT,
+    load_unit TEXT NOT NULL DEFAULT 'kg' CHECK(load_unit IN ('kg', 'lb')),
+    reps INTEGER CHECK(reps IS NULL OR reps > 0), reps_left INTEGER CHECK(reps_left IS NULL OR reps_left >= 0),
+    reps_right INTEGER CHECK(reps_right IS NULL OR reps_right >= 0), rpe TEXT,
+    performed INTEGER NOT NULL DEFAULT 0 CHECK(performed IN (0, 1)), equipment_setup_id TEXT REFERENCES equipment_setups(id),
+    CHECK(performed = 0 OR (load IS NOT NULL AND (reps IS NOT NULL OR reps_left > 0 OR reps_right > 0))),
+    UNIQUE(workout_exercise_id, position)
+  );
+  INSERT INTO workout_sets_new(id, workout_exercise_id, position, type, target_min, target_max, load, load_unit, reps, performed, equipment_setup_id)
+    SELECT id, workout_exercise_id, position, type, target_min, target_max, load, load_unit, reps, performed, equipment_setup_id FROM workout_sets;
+  DROP TABLE workout_sets;
+  ALTER TABLE workout_sets_new RENAME TO workout_sets;`,
 ];
 
 export async function migrate(database: TrainingDatabase) {

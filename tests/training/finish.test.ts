@@ -128,6 +128,8 @@ test('failed or invalid latest input blocks finishing until corrected and retrie
   await training.editSet(id, { load: '45' });
   await assert.rejects(training.finishWorkout(workout.id), /Save or correct/);
   await training.retryFailedSaves();
+  await assert.rejects(training.finishWorkout(workout.id), /No performed sets/);
+  await training.setPerformed(id, true);
   await training.finishWorkout(workout.id);
   const details = (await (await reopen()).getCompletedWorkout(workout.id))!;
   assert.equal(details.exercises[0].sets[0].load, '45');

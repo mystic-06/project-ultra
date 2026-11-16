@@ -82,7 +82,7 @@ test('unsupported entry modes cannot be accidentally logged as weighted sets', a
   assert.equal(recovered.sets[0].performed, false);
 });
 
-test('failed structural saves retain checks and raw drafts; retry moves them without rewriting acknowledged values', async (t) => {
+test('failed structural saves retain unchecked raw drafts; retry moves them without rewriting acknowledged values', async (t) => {
   const { training, control, reopen } = await fixture(t);
   await training.start(upperStarter);
   const workout = training.getSnapshot().workout!;
@@ -97,9 +97,9 @@ test('failed structural saves retain checks and raw drafts; retry moves them wit
   assert.deepEqual(training.getSnapshot().workout, before);
   await training.adaptWorkout(workout.id, { type: 'move-exercise', exerciseId: second.id, direction: -1 });
   const moved = training.getSnapshot().workout!.exercises[1].sets[0];
-  assert.deepEqual([moved.id, moved.load, moved.performed, moved.status], [set.id, '40.', true, 'editing']);
+  assert.deepEqual([moved.id, moved.load, moved.performed, moved.status], [set.id, '40.', false, 'editing']);
   const recovered = (await reopen()).getSnapshot().workout!.exercises[1].sets[0];
-  assert.deepEqual([recovered.id, recovered.load, recovered.performed], [set.id, '40', true]);
+  assert.deepEqual([recovered.id, recovered.load, recovered.performed], [set.id, '40', false]);
 });
 
 test('adaptation waits for queued checks and does not publish topology before commit', async (t) => {
