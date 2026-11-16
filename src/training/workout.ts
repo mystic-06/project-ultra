@@ -100,9 +100,13 @@ export interface Training {
   close(): Promise<void>;
 }
 
+function isValidLoad(load: string) {
+  return load === '' || (/^\d+(?:\.\d{1,2})?$/.test(load) && Number.isFinite(Number(load)));
+}
+
 function inspectInput(set: Pick<SetEntry, 'load' | 'reps' | 'repsLeft' | 'repsRight' | 'rpe'>, mode: EntryMode) {
   const { load, reps, repsLeft, repsRight, rpe } = set;
-  const validLoad = load === '' || (/^\d+(?:\.\d{1,2})?$/.test(load) && Number.isFinite(Number(load)));
+  const validLoad = isValidLoad(load);
   const whole = (value: string) => value === '' || (/^\d+$/.test(value) && Number.isSafeInteger(Number(value)));
   const validReps = mode === 'unilateral' ? whole(repsLeft) && whole(repsRight) : whole(reps) && (reps === '' || Number(reps) > 0);
   const validRpe = rpe === '' || (/^\d+(?:\.\d)?$/.test(rpe) && Number(rpe) >= 1 && Number(rpe) <= 10 && Number(rpe) * 2 % 1 === 0);
@@ -222,7 +226,7 @@ class TrainingModule implements Training {
     if (unit !== 'kg' && unit !== 'lb') return Promise.reject(new Error('Invalid load unit.'));
     if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
-    if (rows.some((row) => row.load !== '' && !/^\d+(?:\.\d{1,2})?$/.test(row.load))) return Promise.reject(new Error('Complete or clear the unfinished load before changing units.'));
+    if (rows.some((row) => !isValidLoad(row.load))) return Promise.reject(new Error('Complete or clear the unfinished load before changing units.'));
     this.isAdapting = true; this.publish();
     return this.enqueue(async () => {
       await this.transaction(() => this.database.run('UPDATE load_settings SET unit = ? WHERE id = 1', [unit]));
@@ -564,7 +568,7 @@ class TrainingModule implements Training {
     if (!row) return Promise.resolve(false);
     if (!this.supportsEntry(row)) return Promise.resolve(false);
     Object.assign(row, patch);
-    if (patch.load !== undefined && (patch.load === '' || (/^\d+(?:\.\d{1,2})?$/.test(patch.load) && Number.isFinite(Number(patch.load))))) {
+    if (patch.load !== undefined && isValidLoad(patch.load)) {
       row.originalLoad = patch.load;
       row.loadUnit = this.loadUnit;
     }

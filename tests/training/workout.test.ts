@@ -563,3 +563,15 @@ test('an invalid edit unchecks even when an earlier failed check precedes anothe
   const recovered = await reopen();
   assert.deepEqual([first(recovered).reps, first(recovered).performed], ['6', false]);
 });
+
+test('unit changes preserve an oversized invalid load draft', async (t) => {
+  const { training } = await fixture(t);
+  await training.start(upperStarter);
+  const id = first(training).id;
+  await training.editSet(id, { load: '40', reps: '6' });
+  const invalid = '9'.repeat(400);
+  assert.equal(await training.editSet(id, { load: invalid }), false);
+  await assert.rejects(training.setLoadUnit('lb'), /Complete or clear/);
+  assert.equal(first(training).load, invalid);
+  assert.equal(training.getSnapshot().loadUnit, 'kg');
+});
