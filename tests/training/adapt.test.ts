@@ -69,13 +69,14 @@ test('catalogue covers every training example and UPPER movement without custom 
   for (const name of names) assert.ok(training.searchExercises(name).length > 0, name);
 });
 
-test('unsupported entry modes cannot be accidentally logged as weighted sets', async (t) => {
+test('assisted sets cannot be checked using weighted load alone', async (t) => {
   const { training, reopen } = await fixture(t);
   await training.start();
   const id = training.getSnapshot().workout!.id;
   await training.adaptWorkout(id, { type: 'add-exercise', catalogueId: 'assisted-pull-up' });
   const set = training.getSnapshot().workout!.exercises[0].sets[0];
   assert.equal(await training.editSet(set.id, { load: '0', reps: '6' }), false);
+  await training.editSet(set.id, { reps: '6' });
   assert.equal(await training.setPerformed(set.id, true), false);
   const recovered = (await reopen()).getSnapshot().workout!.exercises[0];
   assert.equal(recovered.entryMode, 'assisted');

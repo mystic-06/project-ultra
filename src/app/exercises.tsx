@@ -52,7 +52,7 @@ export default function ExercisePicker() {
       renderItem={({ item }) => <Pressable accessibilityRole="button" disabled={busy || workout?.id !== workoutId}
         onPress={() => replaceId ? setSelected(item) : void choose(item)} style={styles.card}>
         <Text style={styles.heading}>{item.name}</Text>
-        <Text style={styles.muted}>{item.equipment} · {item.entryMode === 'weighted' ? item.loadConvention : `${item.entryMode} entry not available yet`}</Text>
+        <Text style={styles.muted}>{item.equipment} · {item.entryMode === 'assisted' ? 'Assistance' : item.loadConvention}</Text>
       </Pressable>} />
   </SafeAreaView>;
 }

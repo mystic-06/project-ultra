@@ -1,4 +1,4 @@
-import { formatLoad } from '@/training/workout';
+import { formatAssistance, formatLoad } from '@/training/workout';
 import { Link, router } from 'expo-router';
 import { useState, useRef, type ComponentRef } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -52,7 +52,7 @@ export default function WorkoutScreen() {
             {workout.exercises.length === 0 && <Text style={pulseStyles.text}>Your workout is empty. Add an exercise to begin.</Text>}
             {workout.exercises.map((exercise, exerciseIndex) => <View key={exercise.id} style={styles.exercise}>
               <Text style={pulseStyles.heading}>{exercise.name}</Text>
-              <Text style={pulseStyles.muted}>{exercise.loadConvention} · {loadUnit}</Text>
+              <Text style={pulseStyles.muted}>{exercise.entryMode === 'assisted' ? 'Assistance' : exercise.loadConvention} · {loadUnit}</Text>
               {['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment) && <EquipmentSelector training={training} exercise={exercise} setups={equipmentSetups} disabled={busy} />}
               {managing && <EditActions>
                 <EditAction label={`Move ${exercise.name} up`} disabled={busy || exerciseIndex === 0} onPress={() => void apply({ type: 'move-exercise', exerciseId: exercise.id, direction: -1 })} />
@@ -61,17 +61,17 @@ export default function WorkoutScreen() {
                 <EditAction label={`Remove ${exercise.name}`} disabled={busy} onPress={() => setConfirmation({ label: `Remove ${exercise.name}`, change: { type: 'remove-exercise', exerciseId: exercise.id } })} />
               </EditActions>}
               {exercise.entryMode === 'bodyweight' && <BodyweightDetails exercise={exercise} training={training} disabled={busy} loadUnit={loadUnit} />}
-              {!['weighted', 'unilateral', 'bodyweight'].includes(exercise.entryMode) && <Text style={pulseStyles.muted}>{exercise.entryMode} logging is not available yet. You can arrange this exercise and its sets.</Text>}
+              {!['weighted', 'unilateral', 'bodyweight', 'assisted'].includes(exercise.entryMode) && <Text style={pulseStyles.muted}>{exercise.entryMode} logging is not available yet. You can arrange this exercise and its sets.</Text>}
               <View style={styles.row} accessibilityElementsHidden>
                 <Text style={[styles.columnLabel, styles.identity]}>Set</Text>
                 <Text style={[styles.columnLabel, styles.previous]}>Previous</Text>
-                <Text style={[styles.columnLabel, styles.input]}>{exercise.entryMode === 'bodyweight' ? `Added ${loadUnit}` : loadUnit}</Text>
+                <Text style={[styles.columnLabel, styles.input]}>{exercise.entryMode === 'bodyweight' ? `Added ${loadUnit}` : exercise.entryMode === 'assisted' ? `Assist ${loadUnit}` : loadUnit}</Text>
                 <Text style={[styles.columnLabel, styles.input]}>Reps</Text>
                 <Text style={[styles.columnLabel, styles.check]}>Check</Text>
               </View>
               {exercise.sets.map((set, index) => <View key={set.id}>
-                {['weighted', 'unilateral', 'bodyweight'].includes(exercise.entryMode)
-                  ? <SetRow unilateral={exercise.entryMode === 'unilateral'} set={set} index={index} exerciseName={exercise.name} training={training} loadUnit={loadUnit} disabled={busy} />
+                {['weighted', 'unilateral', 'bodyweight', 'assisted'].includes(exercise.entryMode)
+                  ? <SetRow bodyweight={exercise.entryMode === 'bodyweight'} assisted={exercise.entryMode === 'assisted'} unilateral={exercise.entryMode === 'unilateral'} set={set} index={index} exerciseName={exercise.name} training={training} loadUnit={loadUnit} disabled={busy} />
                   : <Text style={pulseStyles.text}>Set {index + 1} · Not entered</Text>}
                 {managing && <EditActions>
                   <EditAction label={`Move set ${index + 1} up`} disabled={busy || index === 0} onPress={() => void apply({ type: 'move-set', exerciseId: exercise.id, setId: set.id, direction: -1 })} />
@@ -122,7 +122,7 @@ function BodyweightDetails({ exercise, training, disabled, loadUnit }: { exercis
   </View>;
 }
 
-function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilateral }: { set: SetEntry; index: number; exerciseName: string; training: Training; loadUnit: 'kg' | 'lb'; disabled: boolean; unilateral: boolean }) {
+function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilateral, assisted, bodyweight }: { set: SetEntry; index: number; exerciseName: string; training: Training; loadUnit: 'kg' | 'lb'; disabled: boolean; unilateral: boolean; assisted: boolean; bodyweight: boolean }) {
   const repsInput = useRef<ComponentRef<typeof TextInput>>(null);
   const [confirmCopy, setConfirmCopy] = useState<{ reference: string; revision: number } | null>(null);
   const label = `${exerciseName}, set ${index + 1}`;
@@ -131,20 +131,32 @@ function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilat
   const status = set.inputState === 'incomplete' && set.status !== 'editing'
     ? set.status === 'saved' ? 'Incomplete set · values saved' : `Incomplete set · ${durability.toLowerCase()}`
     : durability;
+  const previous = set.previous;
+  const previousMeasurements = previous ? [
+    previous.entryMode === 'bodyweight' && previous.bodyweightLoad !== null ? `Bodyweight ${previous.bodyweightLoad} ${loadUnit}` : '',
+    previous.entryMode !== 'assisted' && previous.load !== '' ? `${previous.entryMode === 'bodyweight' ? 'Added ' : ''}${previous.load} ${loadUnit}${previous.entryMode !== 'bodyweight' ? ` (${previous.loadConvention})` : ''}` : '',
+    previous.assistance !== '' ? `Assistance ${formatAssistance(previous.assistance)} ${loadUnit}` : '',
+  ].filter(Boolean).join(' · ') : '';
+  const previousReps = previous ? previous.entryMode === 'unilateral' ? `${previous.repsLeft || '–'}/${previous.repsRight || '–'}` : previous.reps : '';
+  const previousSummary = previous ? `${previousMeasurements ? `${previousMeasurements} × ` : ''}${previousReps} reps${previous.rpe ? ` @ ${previous.rpe}` : ''}` : '';
   return <View style={styles.set}>
     <Text style={styles.target}>{target}</Text>
     <View style={styles.row}>
       <Text style={[pulseStyles.text, styles.identity]}>{index + 1}</Text>
-      <View style={styles.previous}>{set.previous && <Pressable accessibilityRole="button" accessibilityLabel={`Copy previous result for ${label}`} disabled={disabled} onPress={() => {
-        if (set.load || set.reps || set.repsLeft || set.repsRight) setConfirmCopy({ reference: set.previous!.reference, revision: set.revision });
+      <View style={styles.previous}>{set.previous && <Pressable accessibilityRole="button" accessibilityLabel={`Copy previous result for ${label}: ${previousSummary}`} disabled={disabled} onPress={() => {
+        if (set.load || set.assistance || set.reps || set.repsLeft || set.repsRight) setConfirmCopy({ reference: set.previous!.reference, revision: set.revision });
         else void training.copyPrevious(set.id, false);
-      }}><Text style={pulseStyles.muted}>{set.previous.entryMode === 'bodyweight' ? [set.previous.bodyweightLoad !== null ? `Bodyweight ${set.previous.bodyweightLoad} ${loadUnit}` : '', set.previous.load !== '' ? `Added ${set.previous.load} ${loadUnit}` : ''].filter(Boolean).join(' · ') : set.previous.load !== '' ? `${set.previous.load} ${loadUnit} (${set.previous.loadConvention})` : ''}{(set.previous.entryMode === 'bodyweight' ? set.previous.bodyweightLoad !== null || set.previous.load !== '' : set.previous.load !== '') ? ' × ' : ''}{set.previous.entryMode === 'unilateral' ? `${set.previous.repsLeft || '–'}/${set.previous.repsRight || '–'}` : set.previous.reps}{set.previous.rpe ? ` @ ${set.previous.rpe}` : ''}
+      }}><Text style={pulseStyles.muted}>{previousSummary}
 Copy</Text></Pressable>}</View>
-      <TextInput editable={!disabled} style={[styles.input, styles.field]} value={set.load} placeholder="—" placeholderTextColor={pulse.secondary}
+      {assisted ? <View style={[styles.input, styles.field, styles.sides]}>
+        {set.assistance !== '' && !/^[−-]/.test(set.assistance) && <Text style={pulseStyles.text}>−</Text>}
+        <TextInput editable={!disabled} style={[styles.side, styles.assistanceInput]} value={set.assistance} placeholder="—" placeholderTextColor={pulse.secondary}
+          accessibilityLabel={`${label}, assistance in ${loadUnit === 'kg' ? 'kilograms' : 'pounds'}`} keyboardType="decimal-pad" selectTextOnFocus
+          returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => repsInput.current?.focus()} onBlur={() => { void training.blurSet(set.id); }} onChangeText={(assistance) => { void training.editSet(set.id, { assistance }); }} />
+      </View> : <TextInput editable={!disabled} style={[styles.input, styles.field]} value={set.load} placeholder="—" placeholderTextColor={pulse.secondary}
         accessibilityLabel={`${label}, load in ${loadUnit === 'kg' ? 'kilograms' : 'pounds'}`} keyboardType="decimal-pad" selectTextOnFocus
         autoCorrect={false} returnKeyType="next" submitBehavior="submit"
-        onSubmitEditing={() => repsInput.current?.focus()} onBlur={() => { void training.blurSet(set.id); }}
-        onChangeText={(load) => { void training.editSet(set.id, { load }); }} />
+        onSubmitEditing={() => repsInput.current?.focus()} onBlur={() => { void training.blurSet(set.id); }} onChangeText={(load) => { void training.editSet(set.id, { load }); }} /> }
       {unilateral ? <View style={[styles.input, styles.field, styles.sides]}>
         <TextInput editable={!disabled} ref={repsInput} style={styles.side} value={set.repsLeft} placeholder="L" placeholderTextColor={pulse.secondary}
           accessibilityLabel={`${label}, left reps`} keyboardType="number-pad" onChangeText={(repsLeft) => { void training.editSet(set.id, { repsLeft }); }} />
@@ -161,7 +173,15 @@ Copy</Text></Pressable>}</View>
         <Text style={[styles.checkText, set.performed && { color: pulse.onAccent }]}>{set.performed ? '✓' : '○'}</Text>
       </Pressable>
     </View>
-    {confirmCopy && <View style={pulseStyles.card}><Text style={pulseStyles.text}>Replace today’s load and reps with the previous result?</Text><EditAction label="Replace load and reps" disabled={disabled} onPress={() => { void training.copyPrevious(set.id, true, confirmCopy); setConfirmCopy(null); }} /><EditAction label="Cancel copy" onPress={() => setConfirmCopy(null)} /></View>}
+    {confirmCopy && <View style={pulseStyles.card}><Text style={pulseStyles.text}>Replace today’s measurements and reps with the previous result?</Text><EditAction label="Replace measurements and reps" disabled={disabled} onPress={() => { void training.copyPrevious(set.id, true, confirmCopy); setConfirmCopy(null); }} /><EditAction label="Cancel copy" onPress={() => setConfirmCopy(null)} /></View>}
+    {bodyweight && <View style={styles.options}>
+      <Text style={pulseStyles.muted}>Assistance ({loadUnit})</Text>
+      <View style={[styles.rpe, styles.sides]}>{set.assistance !== '' && !/^[−-]/.test(set.assistance) && <Text style={pulseStyles.text}>−</Text>}
+        <TextInput editable={!disabled} style={[styles.side, styles.assistanceInput]} value={set.assistance} placeholder="—" placeholderTextColor={pulse.secondary}
+          accessibilityLabel={`${label}, assistance in ${loadUnit === 'kg' ? 'kilograms' : 'pounds'}`} keyboardType="decimal-pad"
+          onBlur={() => { void training.blurSet(set.id); }} onChangeText={(assistance) => { void training.editSet(set.id, { assistance }); }} />
+      </View>
+    </View>}
     <View style={styles.options}>
       {(['normal', 'warmup', 'drop'] as const).map((type) => <Pressable key={type} accessibilityRole="radio" accessibilityState={{ checked: set.type === type, disabled }} disabled={disabled}
         accessibilityLabel={`${label}, ${type === 'warmup' ? 'Warm-up' : type}`} onPress={() => { void training.editSet(set.id, { type }); }} style={[styles.typeButton, set.type === type && styles.selectedType]}>
@@ -180,6 +200,7 @@ Copy</Text></Pressable>}</View>
 }
 
 const styles = StyleSheet.create({
+  assistanceInput: { minHeight: 48, minWidth: 48 },
   sides: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 2 },
   side: { flex: 1, minWidth: 0, color: pulse.text, textAlign: 'center', fontSize: 16, padding: 0 },
   options: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginLeft: 34 },

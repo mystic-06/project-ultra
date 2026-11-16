@@ -13,7 +13,7 @@ export type WorkoutChange =
 
 function blankSet(id: string, template?: SetEntry): SetEntry {
   return { id, equipmentSetupId: template?.equipmentSetupId ?? null, bodyweight: template?.bodyweight ?? null, bodyweightUnit: template?.bodyweightUnit ?? 'kg', bodyweightFraction: template?.bodyweightFraction ?? null, bodyweightLoad: template?.bodyweightLoad ?? null, type: template?.type ?? 'normal', targetMin: template?.targetMin ?? 0, targetMax: template?.targetMax ?? 0,
-    load: '', originalLoad: '', loadUnit: 'kg', reps: '', repsLeft: '', repsRight: '', rpe: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null };
+    load: '', originalLoad: '', loadUnit: 'kg', assistance: '', originalAssistance: '', assistanceUnit: 'kg', reps: '', repsLeft: '', repsRight: '', rpe: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null };
 }
 
 function withExerciseBodyweight(set: SetEntry, exercise: Workout['exercises'][number]): SetEntry {

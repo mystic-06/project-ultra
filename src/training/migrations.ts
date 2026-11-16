@@ -102,6 +102,8 @@ const migrations = [
   ALTER TABLE workout_sets_new RENAME TO workout_sets;`,
   `CREATE INDEX previous_exercise_lookup ON workout_exercises(exercise_id, workout_id);
   CREATE INDEX previous_setup_lookup ON workout_sets(workout_exercise_id, equipment_setup_id);`,
+  `ALTER TABLE workout_sets ADD COLUMN assistance TEXT;
+  ALTER TABLE workout_sets ADD COLUMN assistance_unit TEXT NOT NULL DEFAULT 'kg' CHECK(assistance_unit IN ('kg', 'lb'));`,
 ];
 
 export async function migrate(database: TrainingDatabase) {
