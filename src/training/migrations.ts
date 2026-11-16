@@ -32,6 +32,7 @@ const migrations = [
     UNIQUE(workout_exercise_id, position)
   );`,
   `ALTER TABLE workouts ADD COLUMN completed_at INTEGER;`,
+  `ALTER TABLE workout_exercises ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'weighted';`,
 ];
 
 export async function migrate(database: TrainingDatabase) {

@@ -7,16 +7,18 @@ import { pulse, pulseStyles as styles } from '@/components/training/pulse';
 import { WorkoutSaveFeedback } from '@/components/training/save-feedback';
 import { useLocalDate } from '@/hooks/use-local-date';
 import { useTraining } from '@/training/provider';
-import { upperStarter } from '@/training/routines';
+import { upperStarter, type Routine } from '@/training/routines';
 
 interface StartChoice {
   step: 'choose' | 'confirm';
   workoutId: string;
   title: string;
+  selected: Routine;
 }
 
 export default function HomeScreen() {
-  const { training, workout, history, isEnding } = useTraining();
+  const { training, workout, history, isEnding, isAdapting } = useTraining();
+  const busy = isEnding || isAdapting;
   const now = useLocalDate();
   const activity = training.getWeeklyActivity(now);
   const greeting = ['Ready when you are.', 'Make time for you.', 'One set at a time.'][new Date(now).getDate() % 3];
@@ -25,15 +27,15 @@ export default function HomeScreen() {
   const [error, setError] = useState<string | null>(null);
   const [choice, setChoice] = useState<StartChoice | null>(null);
 
-  async function start() {
+  async function start(selected: Routine = upperStarter) {
     setStarting(true);
     setError(null);
     try {
-      if (await training.start(upperStarter)) {
+      if (await training.start(selected)) {
         router.navigate('/workout');
       } else {
         const current = training.getSnapshot().workout!;
-        setChoice({ step: 'choose', workoutId: current.id, title: current.title });
+        setChoice({ step: 'choose', workoutId: current.id, title: current.title, selected });
       }
     } catch {
       setError('Could not start. Your saved data is unchanged. Try again.');
@@ -59,7 +61,7 @@ export default function HomeScreen() {
     setReplacing(true);
     setError(null);
     try {
-      await training.replaceActiveWorkout(upperStarter, choice.workoutId);
+      await training.replaceActiveWorkout(choice.selected, choice.workoutId);
       setChoice(null);
       router.navigate('/workout');
     } catch {
@@ -74,9 +76,13 @@ export default function HomeScreen() {
     <Text style={styles.heading}>{upperStarter.title}</Text>
     <Text style={styles.muted}>{upperStarter.exercises.length} exercises · {upperStarter.exercises.reduce((total, exercise) => total + exercise.sets.length, 0)} sets</Text>
     <Text style={styles.muted}>{upperStarter.exercises.map((exercise) => exercise.name).join(' · ')}</Text>
-    <Pressable accessibilityRole="button" accessibilityState={{ disabled: starting || isEnding }}
-      disabled={starting || isEnding} onPress={start} style={[styles.button, (starting || isEnding) && { opacity: 0.6 }]}>
+    <Pressable accessibilityRole="button" accessibilityState={{ disabled: starting || busy }}
+      disabled={starting || busy} onPress={() => void start()} style={[styles.button, (starting || busy) && { opacity: 0.6 }]}>
       <Text style={styles.buttonText}>{starting ? 'Starting…' : workout ? 'Start another workout' : 'Start workout'}</Text>
+    </Pressable>
+    <Pressable accessibilityRole="button" disabled={starting || busy} style={localStyles.cancel}
+      onPress={() => void start({ id: 'unplanned', title: 'Workout', exercises: [] })}>
+      <Text style={styles.text}>Start empty workout</Text>
     </Pressable>
     {error && !choice && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
   </View>;
@@ -133,7 +139,7 @@ export default function HomeScreen() {
             </Text>
             <Text style={styles.text}>Current: {choice?.title}</Text>
             {choice?.step === 'confirm' && <>
-              <Text style={styles.text}>Start: {upperStarter.title}</Text>
+              <Text style={styles.text}>Start: {choice?.selected.title}</Text>
               <Text style={styles.muted}>This removes the current workout, including its sets and any unsaved or incomplete input.</Text>
             </>}
             <WorkoutSaveFeedback />
