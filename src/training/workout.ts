@@ -2,7 +2,7 @@ import { catalogueExercise, searchExercises, type CatalogueExercise, type EntryM
 import { changeWorkout, persistWorkoutStructure, type WorkoutChange } from './workout-changes';
 import type { TrainingDatabase } from './database';
 import { migrate } from './migrations';
-import { upperStarter, type Routine } from './routines';
+import { routineFromDraft, upperStarter, validateRoutine, type Routine } from './routines';
 
 export type SaveStatus = 'editing' | 'saving' | 'saved' | 'failed';
 export interface EquipmentSetup { id: string; label: string | null; gym: string | null; ratio: string | null; archived: boolean }
@@ -59,6 +59,7 @@ export interface Training {
   saveRoutineDraft(data: string): Promise<void>;
   discardRoutineDraft(): Promise<void>;
   saveRoutine(routine: Routine): Promise<void>;
+  commitRoutineDraft(data: string): Promise<void>;
   deleteRoutine(id: string): Promise<void>;
   getWeeklyActivity(at?: number): WeeklyActivity;
   getRestTimer(): RestTimer;
@@ -155,13 +156,14 @@ class TrainingModule implements Training {
       this.routineDraft = null; this.publish();
     });
   }
+  commitRoutineDraft(data: string): Promise<void> {
+    try { return this.saveRoutine(routineFromDraft(data)); }
+    catch (error) { return Promise.reject(error); }
+  }
   saveRoutine(routine: Routine): Promise<void> {
-    if (!routine.id || !routine.title.trim() || routine.exercises.some((e) =>
-      !e.exerciseId || !e.sets.length || (e.restSeconds !== undefined && (!Number.isSafeInteger(e.restSeconds) || e.restSeconds < 0)) ||
-      e.sets.some((set) => !['normal', 'warmup', 'drop'].includes(set.type) || !Number.isSafeInteger(set.targetMin) || !Number.isSafeInteger(set.targetMax) || set.targetMin < 1 || set.targetMax < set.targetMin))) {
-      return Promise.reject(new Error('Enter a name, valid targets and rest duration.'));
-    }
-    const saved = JSON.stringify({ ...routine, title: routine.title.trim() });
+    let saved: string;
+    try { saved = JSON.stringify(validateRoutine(routine)); }
+    catch (error) { return Promise.reject(error); }
     return this.enqueue(async () => {
       await this.transaction(async () => {
         await this.database.run('INSERT INTO routines(id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data', [routine.id, saved]);

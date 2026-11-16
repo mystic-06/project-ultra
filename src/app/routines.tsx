@@ -1,14 +1,11 @@
-import { useState } from 'react';
+import { createContext, useContext, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { pulse, pulseStyles as styles } from '@/components/training/pulse';
 import { useTraining } from '@/training/provider';
-import type { Routine } from '@/training/routines';
+import { RoutineValidationError, type Routine, type RoutineDraft as Draft, type RoutineDraftExercise as DraftExercise, type RoutineDraftSet as DraftSet } from '@/training/routines';
 
-type DraftSet = { type: 'normal' | 'warmup' | 'drop'; min: string; max: string };
-type DraftExercise = Omit<Routine['exercises'][number], 'sets' | 'restSeconds'> & { rest: string; sets: DraftSet[] };
-type Draft = { id: string; title: string; exercises: DraftExercise[] };
 const toDraft = (routine: Routine): Draft => ({ ...routine, exercises: routine.exercises.map((e) => ({ ...e, rest: e.restSeconds?.toString() ?? '', sets: e.sets.map((s) => ({ type: s.type, min: String(s.targetMin), max: String(s.targetMax) })) })) });
 const newSet = (): DraftSet => ({ type: 'normal', min: '8', max: '10' });
 function move<T>(items: T[], index: number, direction: number) {
@@ -16,11 +13,14 @@ function move<T>(items: T[], index: number, direction: number) {
   if (destination >= 0 && destination < items.length) [next[index], next[destination]] = [next[destination], next[index]];
   return next;
 }
+const BusyContext = createContext<{ busy: boolean; lock: { current: boolean } }>({ busy: false, lock: { current: false } });
 function Button({ title, onPress }: { title: string; onPress: () => void }) {
-  return <Pressable accessibilityRole="button" onPress={onPress} style={local.button}><Text style={local.buttonText}>{title}</Text></Pressable>;
+  const { busy, lock } = useContext(BusyContext);
+  return <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} onPress={() => { if (!lock.current) onPress(); }} style={local.button}><Text style={local.buttonText}>{title}</Text></Pressable>;
 }
-function Input({ label, value, onChange, numeric = false }: { label: string; value: string; onChange: (value: string) => void; numeric?: boolean }) {
-  return <View style={local.field}><Text style={styles.muted}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChange} keyboardType={numeric ? 'number-pad' : 'default'} style={local.input} /></View>;
+function Input({ label, value, onChange, numeric = false, disabled = false }: { label: string; value: string; onChange: (value: string) => void; numeric?: boolean; disabled?: boolean }) {
+  const { lock } = useContext(BusyContext);
+  return <View style={local.field}><Text style={styles.muted}>{label}</Text><TextInput editable={!disabled} accessibilityLabel={label} value={value} onChangeText={(next) => { if (!lock.current) onChange(next); }} keyboardType={numeric ? 'number-pad' : 'default'} style={local.input} /></View>;
 }
 export default function RoutinesScreen() {
   const { training, routines, routineDraft } = useTraining();
@@ -30,8 +30,10 @@ export default function RoutinesScreen() {
   const [confirm, setConfirm] = useState<'discard' | string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
   function update(next: Draft) {
+    if (busyRef.current) return;
     setDraft(next); setError(null);
     void training.saveRoutineDraft(JSON.stringify(next)).catch(() => setError('Could not save this draft. Make another edit or retry before leaving.'));
   }
@@ -44,34 +46,31 @@ export default function RoutinesScreen() {
     update({ ...draft, exercises: draft.exercises.map((e, i) => i === index ? change(e) : e) });
   }
   async function save() {
-    if (!draft || busy) return;
-    const positive = (value: string) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0;
-    if (!draft.title.trim() || !draft.exercises.length || draft.exercises.some((e) => !e.sets.length || (e.rest !== '' && (!/^\d+$/.test(e.rest) || !Number.isSafeInteger(Number(e.rest)))) || e.sets.some((s) => !positive(s.min) || !positive(s.max) || Number(s.max) < Number(s.min)))) {
-      setError('Add a name and exercise, and enter valid rep ranges and rest seconds.'); return;
-    }
-    setBusy(true);
+    if (!draft || busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try {
-      await training.saveRoutine({ id: draft.id, title: draft.title, exercises: draft.exercises.map((e) => ({ exerciseId: e.exerciseId, name: e.name, loadConvention: e.loadConvention, entryMode: e.entryMode, restSeconds: e.rest === '' ? undefined : Number(e.rest), sets: e.sets.map((s) => ({ type: s.type, targetMin: Number(s.min), targetMax: Number(s.max) })) })) });
+      await training.commitRoutineDraft(JSON.stringify(draft));
       setDraft(null); setError(null);
-    } catch { setError('Could not save the routine. Your draft is kept; try again.'); }
-    finally { setBusy(false); }
+    } catch (error) {
+      setError(error instanceof RoutineValidationError ? error.message : 'Could not save the routine. Your draft is kept; try again.');
+    } finally { busyRef.current = false; setBusy(false); }
   }
   async function discard() {
-    if (busy) return;
-    setBusy(true);
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try { await training.discardRoutineDraft(); setDraft(null); setConfirm(null); setError(null); }
     catch { setError('Could not discard the draft. Try again.'); }
-    finally { setBusy(false); }
+    finally { busyRef.current = false; setBusy(false); }
   }
   async function remove(id: string) {
-    if (busy) return;
-    setBusy(true);
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try { await training.deleteRoutine(id); setConfirm(null); setError(null); }
     catch { setError('Could not delete the routine. Try again.'); }
-    finally { setBusy(false); }
+    finally { busyRef.current = false; setBusy(false); }
   }
-  return <SafeAreaView style={styles.screen} edges={['left', 'right', 'bottom']}>
-    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+  return <BusyContext.Provider value={{ busy, lock: busyRef }}><SafeAreaView style={styles.screen} edges={['left', 'right', 'bottom']}>
+    <ScrollView pointerEvents={busy ? 'none' : 'auto'} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.muted}>Saved routines are available on Home. Changes apply to future workouts.</Text>
       {error && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
       {routineDraft ? <View style={styles.card}><Text style={styles.heading}>Unfinished routine</Text><Text style={styles.muted}>Your interrupted draft is available.</Text>
@@ -84,34 +83,34 @@ export default function RoutinesScreen() {
       </View>)}
       {confirm && !draft && <View style={styles.card}><Text style={styles.heading}>{confirm === 'discard' ? 'Discard this draft?' : 'Delete this routine?'}</Text><Text style={styles.muted}>{confirm === 'discard' ? 'Unsaved edits will be lost.' : 'Existing workouts are kept.'}</Text><Button title={confirm === 'discard' ? 'Confirm discard' : 'Confirm deletion'} onPress={() => void (confirm === 'discard' ? discard() : remove(confirm))} /><Button title="Keep" onPress={() => setConfirm(null)} /></View>}
     </ScrollView>
-    <Modal visible={draft !== null} animationType="slide" onRequestClose={() => setConfirm('discard')}>
+    <Modal visible={draft !== null || busy} animationType="slide" onRequestClose={() => { if (!busyRef.current) setConfirm('discard'); }}>
       <SafeAreaView style={styles.screen}>
-        {confirm === 'discard' && <View style={styles.card}><Text style={styles.heading}>Discard unsaved edits?</Text><Text style={styles.muted}>Your saved routine will stay as it was.</Text><Button title="Confirm discard" onPress={() => void discard()} /><Button title="Keep editing" onPress={() => setConfirm(null)} /></View>}
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {confirm === 'discard' && <View pointerEvents={busy ? 'none' : 'auto'} style={styles.card}><Text style={styles.heading}>Discard unsaved edits?</Text><Text style={styles.muted}>Your saved routine will stay as it was.</Text><Button title="Confirm discard" onPress={() => void discard()} /><Button title="Keep editing" onPress={() => setConfirm(null)} /></View>}
+        <ScrollView pointerEvents={busy ? 'none' : 'auto'} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text accessibilityRole="header" style={styles.title}>Edit routine</Text>
         {error && <><Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>{draft && <Button title="Retry saving draft" onPress={() => update(draft)} />}</>}
         {draft && <>
-          <Input label="Routine name" value={draft.title} onChange={(title) => update({ ...draft, title })} />
+          <Input disabled={busy} label="Routine name" value={draft.title} onChange={(title) => update({ ...draft, title })} />
           {draft.exercises.map((exercise, i) => <View key={`${exercise.exerciseId}-${i}`} style={styles.card}>
             <Text style={styles.heading}>{exercise.name}</Text>
             <View style={local.row}><Button title="Move up" onPress={() => update({ ...draft, exercises: move(draft.exercises, i, -1) })} /><Button title="Move down" onPress={() => update({ ...draft, exercises: move(draft.exercises, i, 1) })} /><Button title="Remove" onPress={() => update({ ...draft, exercises: draft.exercises.filter((_, index) => index !== i) })} /></View>
-            <Input label="Rest override (seconds; blank uses default)" value={exercise.rest} numeric onChange={(rest) => changeExercise(i, (e) => ({ ...e, rest }))} />
+            <Input disabled={busy} label="Rest override (seconds; blank uses default)" value={exercise.rest} numeric onChange={(rest) => changeExercise(i, (e) => ({ ...e, rest }))} />
             {exercise.sets.map((set, j) => <View key={j} style={local.set}>
               <Text style={styles.text}>Set {j + 1} · {set.type}</Text>
               <Button title="Change set type" onPress={() => changeExercise(i, (e) => ({ ...e, sets: e.sets.map((s, k) => k === j ? { ...s, type: s.type === 'normal' ? 'warmup' : s.type === 'warmup' ? 'drop' : 'normal' } : s) }))} />
-              <View style={local.row}><Input label={`Set ${j + 1} min reps`} value={set.min} numeric onChange={(min) => changeExercise(i, (e) => ({ ...e, sets: e.sets.map((s, k) => k === j ? { ...s, min } : s) }))} /><Input label={`Set ${j + 1} max reps`} value={set.max} numeric onChange={(max) => changeExercise(i, (e) => ({ ...e, sets: e.sets.map((s, k) => k === j ? { ...s, max } : s) }))} /></View>
+              <View style={local.row}><Input disabled={busy} label={`Set ${j + 1} min reps`} value={set.min} numeric onChange={(min) => changeExercise(i, (e) => ({ ...e, sets: e.sets.map((s, k) => k === j ? { ...s, min } : s) }))} /><Input disabled={busy} label={`Set ${j + 1} max reps`} value={set.max} numeric onChange={(max) => changeExercise(i, (e) => ({ ...e, sets: e.sets.map((s, k) => k === j ? { ...s, max } : s) }))} /></View>
               <View style={local.row}><Button title="Set up" onPress={() => changeExercise(i, (e) => ({ ...e, sets: move(e.sets, j, -1) }))} /><Button title="Set down" onPress={() => changeExercise(i, (e) => ({ ...e, sets: move(e.sets, j, 1) }))} /><Button title="Remove set" onPress={() => changeExercise(i, (e) => ({ ...e, sets: e.sets.filter((_, k) => k !== j) }))} /></View>
             </View>)}
             <Button title="Add set" onPress={() => changeExercise(i, (e) => ({ ...e, sets: [...e.sets, newSet()] }))} />
           </View>)}
           <Button title={selecting ? 'Close exercise search' : 'Add exercise'} onPress={() => setSelecting(!selecting)} />
-          {selecting && <View style={styles.card}><Input label="Search exercises" value={query} onChange={setQuery} />{training.searchExercises(query).map((exercise) => <Button key={exercise.id} title={exercise.name} onPress={() => { update({ ...draft, exercises: [...draft.exercises, { exerciseId: exercise.id, name: exercise.name, loadConvention: exercise.loadConvention, entryMode: exercise.entryMode, rest: '', sets: [newSet()] }] }); setSelecting(false); setQuery(''); }} />)}</View>}
+          {selecting && <View style={styles.card}><Input disabled={busy} label="Search exercises" value={query} onChange={setQuery} />{training.searchExercises(query).map((exercise) => <Button key={exercise.id} title={exercise.name} onPress={() => { update({ ...draft, exercises: [...draft.exercises, { exerciseId: exercise.id, name: exercise.name, loadConvention: exercise.loadConvention, entryMode: exercise.entryMode, rest: '', sets: [newSet()] }] }); setSelecting(false); setQuery(''); }} />)}</View>}
           <Button title={busy ? 'Saving…' : 'Save routine'} onPress={() => void save()} />
           <Button title="Cancel" onPress={() => setConfirm('discard')} />
         </>}
       </ScrollView></SafeAreaView>
     </Modal>
-  </SafeAreaView>;
+  </SafeAreaView></BusyContext.Provider>;
 }
 const local = StyleSheet.create({
   button: { minHeight: 48, paddingHorizontal: 12, paddingVertical: 12, justifyContent: 'center', borderRadius: 8, backgroundColor: '#34414B', marginVertical: 3 },
