@@ -1,11 +1,13 @@
-import { searchExercises, type CatalogueExercise, type EntryMode } from './catalogue';
+import { catalogueExercise, searchExercises, type CatalogueExercise, type EntryMode } from './catalogue';
 import { changeWorkout, persistWorkoutStructure, type WorkoutChange } from './workout-changes';
 import type { TrainingDatabase } from './database';
 import { migrate } from './migrations';
 import type { Routine } from './routines';
 
 export type SaveStatus = 'editing' | 'saving' | 'saved' | 'failed';
+export interface EquipmentSetup { id: string; label: string | null; gym: string | null; ratio: string | null; archived: boolean }
 export interface SetEntry {
+  equipmentSetupId: string | null;
   id: string;
   type: 'normal' | 'warmup';
   targetMin: number;
@@ -22,7 +24,7 @@ export interface Workout {
   id: string;
   title: string;
   startedAt: number;
-  exercises: { id: string; exerciseId: string; entryMode: EntryMode; name: string; loadConvention: string; sets: SetEntry[] }[];
+  exercises: { id: string; exerciseId: string; equipmentSetupId: string | null; entryMode: EntryMode; name: string; loadConvention: string; sets: SetEntry[] }[];
 }
 export interface CompletedWorkout extends Workout { completedAt: number }
 export interface WorkoutSummary {
@@ -38,13 +40,17 @@ export function summarizeWorkout(workout: Workout) {
   return counts;
 }
 export interface TrainingSnapshot {
-  workout: Workout | null; history: WorkoutSummary[]; isEnding: boolean; isAdapting: boolean;
+  equipmentSetups: EquipmentSetup[]; workout: Workout | null; history: WorkoutSummary[]; isEnding: boolean; isAdapting: boolean;
   saveStatus: SaveStatus; hasIncompleteInput: boolean;
 }
 
 export interface WeeklyActivity { startedAt: number; endsAt: number; completedCount: number }
 
 export interface Training {
+  createEquipmentSetup(input: Pick<EquipmentSetup, 'label' | 'gym' | 'ratio'>): Promise<EquipmentSetup>;
+  archiveEquipmentSetup(id: string, archived: boolean): Promise<void>;
+  selectEquipmentSetup(exerciseId: string, setupId: string | null): Promise<void>;
+  correctSetEquipment(setId: string, setupId: string | null): Promise<void>;
   getWeeklyActivity(at?: number): WeeklyActivity;
   getSnapshot(): TrainingSnapshot;
   subscribe(listener: () => void): () => void;
@@ -78,8 +84,9 @@ export function openTraining(database: TrainingDatabase, now: () => number = Dat
 
 class TrainingModule implements Training {
   private workout: Workout | null = null;
-  private snapshot: TrainingSnapshot = { workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
+  private snapshot: TrainingSnapshot = { equipmentSetups: [], workout: null, history: [], isEnding: false, isAdapting: false, saveStatus: 'saved', hasIncompleteInput: false };
   private history: WorkoutSummary[] = [];
+  private equipmentSetups: EquipmentSetup[] = [];
   private isEnding = false;
   private isAdapting = false;
   private listeners = new Set<() => void>();
@@ -95,6 +102,7 @@ class TrainingModule implements Training {
       await migrate(database);
       const training = new TrainingModule(database, now);
       await training.load();
+      await training.loadEquipment();
       training.history = await training.readHistory();
       training.publish();
       return training;
@@ -123,7 +131,7 @@ class TrainingModule implements Training {
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     const saveStatus = this.isAdapting ? 'saving' : (['failed', 'saving', 'editing'] as const)
       .find((status) => rows.some((row) => row.status === status)) ?? 'saved';
-    this.snapshot = { history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
+    this.snapshot = { equipmentSetups: this.equipmentSetups.map((setup) => ({ ...setup })), history: this.history.map((entry) => ({ ...entry, exerciseNames: [...entry.exerciseNames] })), isEnding: this.isEnding, isAdapting: this.isAdapting, saveStatus, hasIncompleteInput: rows.some((row) => row.inputState === 'incomplete'), workout: this.workout ? {
       ...this.workout,
       exercises: this.workout.exercises.map((exercise) => ({
         ...exercise, sets: exercise.sets.map((set) => ({ ...set })),
@@ -159,16 +167,16 @@ class TrainingModule implements Training {
   }
 
   private async readWorkout(workout: { id: string; title: string; started_at: number }): Promise<Workout> {
-    const exercises = await this.database.all<{ id: string; exercise_id: string; entry_mode: EntryMode; name: string; load_convention: string }>(
-      'SELECT id, exercise_id, entry_mode, name, load_convention FROM workout_exercises WHERE workout_id = ? ORDER BY position', [workout.id]);
+    const exercises = await this.database.all<{ id: string; exercise_id: string; equipment_setup_id: string | null; entry_mode: EntryMode; name: string; load_convention: string }>(
+      'SELECT id, exercise_id, equipment_setup_id, entry_mode, name, load_convention FROM workout_exercises WHERE workout_id = ? ORDER BY position', [workout.id]);
     const entries = [];
     for (const exercise of exercises) {
       const sets = await this.database.all<{
         id: string; type: SetEntry['type']; target_min: number; target_max: number;
-        load: string | null; reps: number | null; performed: number;
+        load: string | null; reps: number | null; performed: number; equipment_setup_id: string | null;
       }>('SELECT * FROM workout_sets WHERE workout_exercise_id = ? ORDER BY position', [exercise.id]);
-      entries.push({ id: exercise.id, exerciseId: exercise.exercise_id, entryMode: exercise.entry_mode, name: exercise.name, loadConvention: exercise.load_convention,
-        sets: sets.map((set): SetEntry => ({ id: set.id, type: set.type, targetMin: set.target_min,
+      entries.push({ id: exercise.id, exerciseId: exercise.exercise_id, equipmentSetupId: exercise.equipment_setup_id, entryMode: exercise.entry_mode, name: exercise.name, loadConvention: exercise.load_convention,
+        sets: sets.map((set): SetEntry => ({ id: set.id, equipmentSetupId: set.equipment_setup_id, type: set.type, targetMin: set.target_min,
           targetMax: set.target_max, load: set.load ?? '', reps: set.reps?.toString() ?? '',
           performed: set.performed === 1, revision: 0, status: 'saved',
           inputState: inspectInput(set.load ?? '', set.reps?.toString() ?? '').inputState, error: null })) });
@@ -239,6 +247,64 @@ class TrainingModule implements Training {
     }).finally(() => { this.isEnding = false; this.publish(); });
   }
 
+  private async loadEquipment() {
+    const rows = await this.database.all<{ id: string; label: string | null; gym: string | null; ratio: string | null; archived: number }>('SELECT * FROM equipment_setups ORDER BY rowid');
+    this.equipmentSetups = rows.map((row) => ({ ...row, archived: row.archived === 1 }));
+  }
+
+  createEquipmentSetup(input: Pick<EquipmentSetup, 'label' | 'gym' | 'ratio'>): Promise<EquipmentSetup> {
+    return this.enqueue(async () => {
+      const clean = (value: string | null) => value?.trim() || null;
+      const [{ id }] = await this.database.all<{ id: string }>('SELECT lower(hex(randomblob(16))) AS id');
+      const setup = { id, label: clean(input.label), gym: clean(input.gym), ratio: clean(input.ratio), archived: false };
+      await this.database.run('INSERT INTO equipment_setups(id, label, gym, ratio) VALUES (?, ?, ?, ?)', [id, setup.label, setup.gym, setup.ratio]);
+      this.equipmentSetups.push(setup); this.publish(); return { ...setup };
+    });
+  }
+
+  archiveEquipmentSetup(id: string, archived: boolean): Promise<void> {
+    return this.enqueue(async () => {
+      const setup = this.equipmentSetups.find((item) => item.id === id);
+      if (!setup) throw new Error('Equipment setup not found.');
+      await this.database.run('UPDATE equipment_setups SET archived = ? WHERE id = ?', [archived ? 1 : 0, id]);
+      setup.archived = archived; this.publish();
+    });
+  }
+
+  private validateEquipment(setupId: string | null) {
+    if (setupId !== null && !this.equipmentSetups.some((item) => item.id === setupId && !item.archived)) throw new Error('Equipment setup is unavailable.');
+  }
+
+  selectEquipmentSetup(exerciseId: string, setupId: string | null): Promise<void> {
+    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
+    this.isAdapting = true; this.publish();
+    return this.enqueue(async () => {
+      const exercise = this.workout?.exercises.find((item) => item.id === exerciseId);
+      if (!exercise || !['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment)) throw new Error('Equipment is unavailable for this exercise.');
+      this.validateEquipment(setupId);
+      await this.transaction(async () => {
+        await this.database.run('UPDATE workout_exercises SET equipment_setup_id = ? WHERE id = ?', [setupId, exerciseId]);
+        await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE workout_exercise_id = ? AND performed = 0', [setupId, exerciseId]);
+        await this.database.run('INSERT INTO equipment_last_selection(exercise_id, setup_id) VALUES (?, ?) ON CONFLICT(exercise_id) DO UPDATE SET setup_id = excluded.setup_id', [exercise.exerciseId, setupId]);
+      });
+      exercise.equipmentSetupId = setupId;
+      exercise.sets.forEach((set) => { if (!set.performed) set.equipmentSetupId = setupId; });
+    }).finally(() => { this.isAdapting = false; this.publish(); });
+  }
+
+  correctSetEquipment(setId: string, setupId: string | null): Promise<void> {
+    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
+    this.isAdapting = true; this.publish();
+    return this.enqueue(async () => {
+      const exercise = this.workout?.exercises.find((item) => item.sets.some((set) => set.id === setId));
+      const set = exercise?.sets.find((item) => item.id === setId);
+      if (!exercise || !set || !set.performed || !['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment)) throw new Error('Checked set not found.');
+      this.validateEquipment(setupId);
+      await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE id = ?', [setupId, setId]);
+      set.equipmentSetupId = setupId;
+    }).finally(() => { this.isAdapting = false; this.publish(); });
+  }
+
   searchExercises = searchExercises;
 
   adaptWorkout(expectedWorkoutId: string, change: WorkoutChange): Promise<void> {
@@ -255,6 +321,13 @@ class TrainingModule implements Training {
           const [{ id }] = await this.database.all<{ id: string }>('SELECT lower(hex(randomblob(16))) AS id');
           return id;
         });
+        for (const exercise of result.exercises) {
+          if (!previous.exercises.some((item) => item.id === exercise.id)) {
+            const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT setup_id FROM equipment_last_selection WHERE exercise_id = ?', [exercise.exerciseId]);
+            exercise.equipmentSetupId = selection?.setup_id ?? null;
+            exercise.sets.forEach((set) => { set.equipmentSetupId = exercise.equipmentSetupId; });
+          }
+        }
         await persistWorkoutStructure(this.database, previous, result);
         return result;
       });
@@ -305,15 +378,19 @@ class TrainingModule implements Training {
       const exerciseId = `${id}:${position}`;
       await this.database.run('INSERT INTO workout_exercises(id, workout_id, exercise_id, name, load_convention, position) VALUES (?, ?, ?, ?, ?, ?)',
         [exerciseId, id, exercise.exerciseId, exercise.name, exercise.loadConvention, position]);
+      const [selection] = await this.database.all<{ setup_id: string | null }>('SELECT setup_id FROM equipment_last_selection WHERE exercise_id = ?', [exercise.exerciseId]);
+      const equipmentSetupId = selection?.setup_id ?? null;
+      await this.database.run('UPDATE workout_exercises SET equipment_setup_id = ? WHERE id = ?', [equipmentSetupId, exerciseId]);
       const sets: SetEntry[] = [];
       for (const [setPosition, set] of exercise.sets.entries()) {
         const setId = `${exerciseId}:${setPosition}`;
         await this.database.run('INSERT INTO workout_sets(id, workout_exercise_id, position, type, target_min, target_max) VALUES (?, ?, ?, ?, ?, ?)',
           [setId, exerciseId, setPosition, set.type, set.targetMin, set.targetMax]);
-        sets.push({ id: setId, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
+        await this.database.run('UPDATE workout_sets SET equipment_setup_id = ? WHERE id = ?', [equipmentSetupId, setId]);
+        sets.push({ id: setId, equipmentSetupId, type: set.type, targetMin: set.targetMin, targetMax: set.targetMax,
           load: '', reps: '', performed: false, revision: 0, status: 'saved', inputState: 'empty', error: null });
       }
-      exercises.push({ id: exerciseId, exerciseId: exercise.exerciseId, entryMode: 'weighted', name: exercise.name, loadConvention: exercise.loadConvention, sets });
+      exercises.push({ id: exerciseId, exerciseId: exercise.exerciseId, equipmentSetupId, entryMode: 'weighted', name: exercise.name, loadConvention: exercise.loadConvention, sets });
     }
     return { id, title: routine.title, startedAt, exercises };
   }

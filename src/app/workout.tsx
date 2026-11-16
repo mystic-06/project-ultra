@@ -3,6 +3,8 @@ import { useState, useRef, type ComponentRef } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { catalogueExercise } from '@/training/catalogue';
+import { EquipmentSelector } from '@/components/training/equipment-selector';
 import { pulse, pulseStyles } from '@/components/training/pulse';
 import { EditAction, EditActions } from '@/components/training/workout-edit-controls';
 import type { WorkoutChange } from '@/training/workout-changes';
@@ -10,7 +12,7 @@ import { useTraining } from '@/training/provider';
 import type { SetEntry, Training } from '@/training/workout';
 
 export default function WorkoutScreen() {
-  const { training, workout, isEnding, isAdapting } = useTraining();
+  const { training, workout, isEnding, isAdapting, equipmentSetups } = useTraining();
   const busy = isEnding || isAdapting;
   const [managing, setManaging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +50,7 @@ export default function WorkoutScreen() {
             {workout.exercises.map((exercise, exerciseIndex) => <View key={exercise.id} style={styles.exercise}>
               <Text style={pulseStyles.heading}>{exercise.name}</Text>
               <Text style={pulseStyles.muted}>{exercise.loadConvention} · kg</Text>
+              {['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment) && <EquipmentSelector training={training} exercise={exercise} setups={equipmentSetups} disabled={busy} />}
               {managing && <EditActions>
                 <EditAction label={`Move ${exercise.name} up`} disabled={busy || exerciseIndex === 0} onPress={() => void apply({ type: 'move-exercise', exerciseId: exercise.id, direction: -1 })} />
                 <EditAction label={`Move ${exercise.name} down`} disabled={busy || exerciseIndex === workout.exercises.length - 1} onPress={() => void apply({ type: 'move-exercise', exerciseId: exercise.id, direction: 1 })} />

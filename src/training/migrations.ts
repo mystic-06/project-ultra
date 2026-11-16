@@ -33,6 +33,10 @@ const migrations = [
   );`,
   `ALTER TABLE workouts ADD COLUMN completed_at INTEGER;`,
   `ALTER TABLE workout_exercises ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'weighted';`,
+  `CREATE TABLE equipment_setups (id TEXT PRIMARY KEY NOT NULL, label TEXT, gym TEXT, ratio TEXT, archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)));
+   CREATE TABLE equipment_last_selection (exercise_id TEXT PRIMARY KEY NOT NULL, setup_id TEXT REFERENCES equipment_setups(id));
+   ALTER TABLE workout_exercises ADD COLUMN equipment_setup_id TEXT REFERENCES equipment_setups(id);
+   ALTER TABLE workout_sets ADD COLUMN equipment_setup_id TEXT REFERENCES equipment_setups(id);`,
 ];
 
 export async function migrate(database: TrainingDatabase) {
