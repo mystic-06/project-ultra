@@ -128,6 +128,9 @@ export interface Training {
   finishWorkout(expectedWorkoutId: string): Promise<void>;
   discardWorkout(expectedWorkoutId: string): Promise<void>;
   getCompletedWorkout(id: string): Promise<CompletedWorkout | null>;
+  editCompletedSetDraft(draft: CompletedWorkout, id: string, patch: Partial<Pick<SetEntry, 'load' | 'assistance' | 'reps' | 'repsLeft' | 'repsRight' | 'rpe' | 'type' | 'performed' | 'equipmentSetupId'>>, unit: LoadUnit): CompletedWorkout;
+  saveCompletedWorkout(baseline: CompletedWorkout, draft: CompletedWorkout, unit: LoadUnit): Promise<CompletedWorkout>;
+  deleteCompletedWorkout(id: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -503,6 +506,78 @@ class TrainingModule implements Training {
       const [workout] = await this.database.all<{ id: string; title: string; started_at: number; completed_at: number; bodyweight: string | null; bodyweight_unit: LoadUnit }>(
         'SELECT id, title, started_at, completed_at, bodyweight, bodyweight_unit FROM workouts WHERE id = ? AND active = 0 AND completed_at IS NOT NULL', [id]);
       return workout ? { ...await this.readWorkout(workout), completedAt: workout.completed_at } : null;
+    });
+  }
+
+  editCompletedSetDraft(draft: CompletedWorkout, id: string, patch: Partial<Pick<SetEntry, 'load' | 'assistance' | 'reps' | 'repsLeft' | 'repsRight' | 'rpe' | 'type' | 'performed' | 'equipmentSetupId'>>, unit: LoadUnit): CompletedWorkout {
+    const next = JSON.parse(JSON.stringify(draft)) as CompletedWorkout;
+    const exercise = next.exercises.find((item) => item.sets.some((set) => set.id === id));
+    const row = exercise?.sets.find((set) => set.id === id);
+    if (!exercise || !row) throw new Error('Set not found.');
+    if ((patch.assistance !== undefined && !['assisted', 'bodyweight'].includes(exercise.entryMode)) || (patch.load !== undefined && exercise.entryMode === 'assisted') || (exercise.entryMode === 'unilateral' ? patch.reps !== undefined : patch.repsLeft !== undefined || patch.repsRight !== undefined)) throw new Error('Measurement is unavailable for this exercise.');
+    Object.assign(row, patch);
+    const invalid = new Set<'load' | 'assistance'>();
+    for (const field of ['load', 'assistance'] as const) if (patch[field] !== undefined) {
+      if (!isValidLoad(patch[field])) invalid.add(field);
+      else if (field === 'load') { row.originalLoad = patch.load!; row.loadUnit = unit; }
+      else { row.originalAssistance = patch.assistance!; row.assistanceUnit = unit; }
+    }
+    const input = inspectInput(row, exercise.entryMode, unit, invalid);
+    if (!input.complete) row.performed = false;
+    row.inputState = input.inputState;
+    row.error = !input.inputValid ? 'Enter valid values.' : patch.performed === true && !input.complete ? 'Complete the required values before marking performed.' : null;
+    return next;
+  }
+
+  saveCompletedWorkout(baseline: CompletedWorkout, draft: CompletedWorkout, unit: LoadUnit): Promise<CompletedWorkout> {
+    // Capture the complete submission before it enters the shared database queue.
+    const original = JSON.parse(JSON.stringify(baseline)) as CompletedWorkout;
+    const submitted = JSON.parse(JSON.stringify(draft)) as CompletedWorkout;
+    return this.enqueue(async () => {
+      const result = await this.transaction(async () => {
+        const [header] = await this.database.all<{ id: string; title: string; started_at: number; completed_at: number; bodyweight: string | null; bodyweight_unit: LoadUnit }>(
+          'SELECT id, title, started_at, completed_at, bodyweight, bodyweight_unit FROM workouts WHERE id = ? AND active = 0 AND completed_at IS NOT NULL', [original.id]);
+        if (!header || submitted.id !== original.id) throw new Error('This workout is no longer available.');
+        const current = { ...await this.readWorkout(header), completedAt: header.completed_at };
+        const fields = (set: SetEntry) => [set.id, set.type, set.originalLoad, set.loadUnit, set.originalAssistance, set.assistanceUnit, set.reps, set.repsLeft, set.repsRight, set.rpe, set.performed, set.equipmentSetupId];
+        const baseRows = original.exercises.flatMap((e) => e.sets);
+        const currentRows = current.exercises.flatMap((e) => e.sets);
+        const draftRows = submitted.exercises.flatMap((e) => e.sets);
+        if (JSON.stringify(baseRows.map(fields)) !== JSON.stringify(currentRows.map(fields)) || draftRows.length !== currentRows.length || draftRows.some((s, i) => s.id !== currentRows[i].id)) throw new Error('This workout changed. Reopen it before saving.');
+        for (const [i, row] of draftRows.entries()) {
+          const base = baseRows[i];
+          const exercise = current.exercises.find((e) => e.sets.some((s) => s.id === row.id))!;
+          if (row.type !== 'normal' && row.type !== 'warmup' && row.type !== 'drop') throw new Error('Invalid set type.');
+          if (row.equipmentSetupId !== base.equipmentSetupId) {
+            if (!['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment)) throw new Error('Equipment applies only to machines and cables.');
+            this.validateEquipment(row.equipmentSetupId);
+          }
+          if ((!['assisted', 'bodyweight'].includes(exercise.entryMode) && row.assistance !== base.assistance) || (exercise.entryMode === 'assisted' && row.load !== base.load) || (exercise.entryMode === 'unilateral' ? row.reps !== base.reps : row.repsLeft !== base.repsLeft || row.repsRight !== base.repsRight)) throw new Error(`${exercise.name}, set ${exercise.sets.findIndex((s) => s.id === row.id) + 1}: measurement is unavailable for this exercise.`);
+          const changedLoad = row.load !== base.load;
+          const changedAssistance = row.assistance !== base.assistance;
+          const value = { ...row, originalLoad: changedLoad ? row.load : base.originalLoad, loadUnit: changedLoad ? unit : base.loadUnit, originalAssistance: changedAssistance ? row.assistance : base.originalAssistance, assistanceUnit: changedAssistance ? unit : base.assistanceUnit };
+          const valid = inspectInput(value, exercise.entryMode, unit);
+          if (!valid.inputValid || (row.performed && !valid.complete)) throw new Error(`${exercise.name}, set ${exercise.sets.findIndex((s) => s.id === row.id) + 1}: enter valid values${row.performed ? ' and complete required fields' : ''}.`);
+          await this.database.run('UPDATE workout_sets SET load = ?, load_unit = ?, assistance = ?, assistance_unit = ?, reps = ?, reps_left = ?, reps_right = ?, rpe = ?, type = ?, performed = ?, equipment_setup_id = ? WHERE id = ?',
+            [value.originalLoad || null, value.loadUnit, value.originalAssistance || null, value.assistanceUnit, row.reps === '' ? null : Number(row.reps), row.repsLeft === '' ? null : Number(row.repsLeft), row.repsRight === '' ? null : Number(row.repsRight), row.rpe || null, row.type, row.performed ? 1 : 0, row.equipmentSetupId, row.id]);
+        }
+        const saved = { ...await this.readWorkout(header), completedAt: header.completed_at };
+        return { saved, history: await this.readHistory(), projection: await this.readPreviousProjection(this.workout) };
+      });
+      this.history = result.history; this.previousByPair = result.projection; this.previousGeneration++; this.publish();
+      return result.saved;
+    });
+  }
+
+  deleteCompletedWorkout(id: string): Promise<void> {
+    return this.enqueue(async () => {
+      const result = await this.transaction(async () => {
+        const [existing] = await this.database.all<{ id: string }>('SELECT id FROM workouts WHERE id = ? AND active = 0 AND completed_at IS NOT NULL', [id]);
+        if (!existing) throw new Error('This workout is no longer available.');
+        await this.database.run('DELETE FROM workouts WHERE id = ?', [id]);
+        return { history: await this.readHistory(), projection: await this.readPreviousProjection(this.workout) };
+      });
+      this.history = result.history; this.previousByPair = result.projection; this.previousGeneration++; this.publish();
     });
   }
 
