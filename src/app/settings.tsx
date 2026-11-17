@@ -1,12 +1,34 @@
-import { useState } from 'react';
-import { Pressable, ScrollView, Switch, Text, TextInput, View, StyleSheet } from 'react-native';
+import { useRef, useState } from 'react';
+import { usePreventRemove } from 'expo-router';
+import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BodyweightSettings } from '@/components/training/bodyweight-settings';
 import { pulse, pulseStyles } from '@/components/training/pulse';
 import { useTraining } from '@/training/provider';
+import { exportBackupFile } from '@/training/export-backup';
 
 export default function SettingsScreen() {
   const { training, restSettings, loadUnit } = useTraining();
+  const [exporting, setExporting] = useState(false);
+  const [backupMessage, setBackupMessage] = useState('');
+  const exportLock = useRef(false);
+  usePreventRemove(exporting, () => setBackupMessage('Please wait for the export to finish.'));
+  async function exportBackup() {
+    if (exportLock.current) return;
+    exportLock.current = true;
+    setExporting(true); setBackupMessage('');
+    try {
+      const result = await exportBackupFile(training);
+      const messages = {
+        success: 'Backup exported to the selected folder.',
+        cancelled: 'Export cancelled.',
+        failed: 'Export failed. Please try again.',
+        partial: 'Export failed. A partial backup may remain in the selected folder; please delete it.',
+        busy: 'Another backup export is in progress.',
+      };
+      setBackupMessage(messages[result]);
+    } finally { exportLock.current = false; setExporting(false); }
+  }
   const [unitError, setUnitError] = useState('');
   const [seconds, setSeconds] = useState(String(restSettings.defaultSeconds));
   const [error, setError] = useState('');
@@ -17,6 +39,12 @@ export default function SettingsScreen() {
   }
   return <SafeAreaView style={pulseStyles.screen} edges={['left', 'right', 'bottom']}>
     <ScrollView contentContainerStyle={pulseStyles.content} keyboardShouldPersistTaps="handled">
+      <View style={pulseStyles.card}>
+        <Text style={pulseStyles.heading}>Backup</Text>
+        <Text style={pulseStyles.muted}>Save a copy of your training data to a folder you choose.</Text>
+        {Platform.OS === 'android' ? <Pressable accessibilityRole="button" accessibilityState={{ disabled: exporting }} disabled={exporting} style={pulseStyles.button} onPress={() => void exportBackup()}><Text style={pulseStyles.buttonText}>{exporting ? 'Exporting…' : 'Export backup'}</Text></Pressable> : <Text style={pulseStyles.muted}>Backup export is available on Android.</Text>}
+        {backupMessage ? <Text accessibilityLiveRegion="polite" style={pulseStyles.muted}>{backupMessage}</Text> : null}
+      </View>
       <BodyweightSettings />
       <View style={pulseStyles.card}>
         <Text style={pulseStyles.heading}>Load unit</Text>

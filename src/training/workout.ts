@@ -93,7 +93,14 @@ export interface TrainingSnapshot {
 
 export interface WeeklyActivity { startedAt: number; endsAt: number; completedCount: number }
 
+export interface BackupV1 {
+  version: 1;
+  data: Record<BackupTable, Record<string, string | number | null>[]>;
+}
+type BackupTable = 'workouts' | 'workout_exercises' | 'workout_sets' | 'equipment_setups' | 'equipment_last_selection' | 'custom_equipment_last_selection' | 'rest_settings' | 'routines' | 'routine_seed' | 'routine_draft' | 'load_settings' | 'bodyweight_settings' | 'exercise_fractions' | 'custom_exercises' | 'custom_draft';
+
 export interface Training {
+  exportBackup(): Promise<BackupV1>;
   beginCustomDraft(data: string): Promise<string>;
   saveCustomDraft(data: string, lease: string): Promise<void>;
   discardCustomDraft(lease: string): Promise<void>;
@@ -514,6 +521,32 @@ class TrainingModule implements Training {
       })),
     } : null };
     this.listeners.forEach((listener) => listener());
+  }
+
+  exportBackup(): Promise<BackupV1> {
+    return this.enqueue(async () => {
+      // Fixed version-one projection: future database migrations cannot silently change the file format.
+      const queries: Record<BackupTable, string> = {
+        workouts: 'SELECT id, routine_id, title, started_at, active, completed_at, bodyweight, bodyweight_unit FROM workouts ORDER BY id',
+        workout_exercises: 'SELECT id, workout_id, exercise_id, name, load_convention, position, entry_mode, equipment_setup_id, rest_seconds, bodyweight, bodyweight_unit, bodyweight_fraction, equipment_category FROM workout_exercises ORDER BY id',
+        workout_sets: 'SELECT id, workout_exercise_id, position, type, target_min, target_max, load, load_unit, reps, reps_left, reps_right, rpe, performed, equipment_setup_id, bodyweight, bodyweight_unit, bodyweight_fraction, bodyweight_load, assistance, assistance_unit FROM workout_sets ORDER BY id',
+        equipment_setups: 'SELECT id, label, gym, ratio, archived FROM equipment_setups ORDER BY rowid',
+        equipment_last_selection: 'SELECT exercise_id, setup_id FROM equipment_last_selection ORDER BY exercise_id',
+        custom_equipment_last_selection: 'SELECT exercise_id, equipment_category, setup_id FROM custom_equipment_last_selection ORDER BY exercise_id, equipment_category',
+        rest_settings: 'SELECT id, automatic, default_seconds FROM rest_settings',
+        routines: 'SELECT id, data FROM routines ORDER BY rowid',
+        routine_seed: 'SELECT id FROM routine_seed',
+        routine_draft: 'SELECT id, data FROM routine_draft',
+        load_settings: 'SELECT id, unit FROM load_settings',
+        bodyweight_settings: 'SELECT id, bodyweight, bodyweight_unit, writeback, setup_complete FROM bodyweight_settings',
+        exercise_fractions: 'SELECT exercise_id, fraction FROM exercise_fractions ORDER BY exercise_id',
+        custom_exercises: 'SELECT id, data FROM custom_exercises ORDER BY rowid',
+        custom_draft: 'SELECT id, data FROM custom_draft',
+      };
+      const data = {} as BackupV1['data'];
+      for (const table of Object.keys(queries) as BackupTable[]) data[table] = await this.database.all(queries[table]);
+      return { version: 1, data };
+    });
   }
 
   private enqueue<T>(action: () => Promise<T>): Promise<T> {

@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { openTraining } from '../../src/training/workout';
+import { upperStarter } from '../../src/training/routines';
+import { openNodeDatabase } from './node-database';
+
+test('export captures acknowledged training, drafts, and archived equipment in one versioned file', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'ultra-backup-'));
+  let training = await openTraining(await openNodeDatabase(join(dir, 'training.db')));
+  t.after(async () => { await training.close(); await rm(dir, { recursive: true, force: true }); });
+  const setup = await training.createEquipmentSetup({ label: 'Cable', gym: null, ratio: '2' });
+  await training.saveRoutineDraft('{"unfinished":');
+  const lease = await training.beginCustomDraft('{"id":"custom-draft","name":""}');
+  await training.saveCustomDraft('{"id":"custom-draft","name":""}', lease);
+  await training.start(upperStarter);
+  const exercise = training.getSnapshot().workout!.exercises[0];
+  await training.selectEquipmentSetup(exercise.id, setup.id);
+  await training.archiveEquipmentSetup(setup.id, true);
+  const set = exercise.sets[0];
+  await training.editSet(set.id, { load: '20', reps: '5' });
+  await training.setPerformed(set.id, true);
+  const unchecked = exercise.sets[1];
+  await training.editSet(unchecked.id, { load: '10', reps: '3' });
+  await training.editSet(unchecked.id, { load: '10.' });
+  const backup = await training.exportBackup();
+  assert.equal(backup.version, 1);
+  assert.equal(backup.data.routine_draft[0].data, '{"unfinished":');
+  assert.equal(backup.data.custom_draft[0].data, '{"id":"custom-draft","name":""}');
+  assert.equal(backup.data.equipment_setups[0].archived, 1);
+  assert.equal(backup.data.equipment_last_selection[0].setup_id, setup.id);
+  assert.equal(backup.data.workout_sets.find(row => row.id === set.id)?.performed, 1);
+  assert.equal(backup.data.workout_sets.find(row => row.id === unchecked.id)?.load, '10');
+  assert.equal(backup.data.workout_sets.find(row => row.id === unchecked.id)?.performed, 0);
+  assert.equal(training.getSnapshot().workout!.exercises[0].sets[1].load, '10.');
+  await training.close(); training = await openTraining(await openNodeDatabase(join(dir, 'training.db')));
+  assert.equal(training.getSnapshot().workout!.exercises[0].sets[0].performed, true);
+});
+
+test('export preserves deleted starter and custom exercise ordering across reopen', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'ultra-backup-empty-'));
+  let training = await openTraining(await openNodeDatabase(join(dir, 'training.db')));
+  t.after(async () => { await training.close(); await rm(dir, { recursive: true, force: true }); });
+  await training.deleteRoutine(upperStarter.id);
+  const custom = JSON.stringify({ id: 'custom-z', name: 'Pull', equipment: 'cable', entryMode: 'weighted', bodyParts: ['back'], fraction: '' });
+  await training.commitCustomDraft(custom, await training.beginCustomDraft(custom));
+  await training.archiveCustomExercise('custom-z', true);
+  await training.close(); training = await openTraining(await openNodeDatabase(join(dir, 'training.db')));
+  const backup = await training.exportBackup();
+  assert.deepEqual(backup.data.routines, []);
+  assert.equal(backup.data.routine_seed[0].id, 1);
+  assert.equal(JSON.parse(backup.data.custom_exercises[0].data as string).archived, true);
+});
