@@ -6,7 +6,7 @@ import { searchExercises } from '@/training/catalogue';
 import { CustomCatalogue } from '@/components/training/custom-catalogue';
 import { pulse, pulseStyles as styles } from '@/components/training/pulse';
 import { useTraining } from '@/training/provider';
-import { RoutineValidationError, type Routine, type RoutineDraft as Draft, type RoutineDraftExercise as DraftExercise, type RoutineDraftSet as DraftSet } from '@/training/routines';
+import { decodeRoutineDraft, RoutineValidationError, type Routine, type RoutineDraft as Draft, type RoutineDraftExercise as DraftExercise, type RoutineDraftSet as DraftSet } from '@/training/routines';
 
 const toDraft = (routine: Routine): Draft => ({ ...routine, exercises: routine.exercises.map((e) => ({ ...e, rest: e.restSeconds?.toString() ?? '', sets: e.sets.map((s) => ({ type: s.type, min: String(s.targetMin), max: String(s.targetMax) })) })) });
 const newSet = (): DraftSet => ({ type: 'normal', min: '8', max: '10' });
@@ -76,7 +76,7 @@ export default function RoutinesScreen() {
       <Text style={styles.muted}>Saved routines are available on Home. Changes apply to future workouts.</Text>
       {error && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
       {routineDraft ? <View style={styles.card}><Text style={styles.heading}>Unfinished routine</Text><Text style={styles.muted}>Your interrupted draft is available.</Text>
-        <Button title="Resume draft" onPress={() => { try { setDraft(JSON.parse(routineDraft) as Draft); setError(null); } catch { setError('The draft could not be opened.'); } }} />
+        <Button title="Resume draft" onPress={() => { try { setDraft(decodeRoutineDraft(routineDraft)); setError(null); } catch { setError('The draft could not be opened.'); } }} />
         <Button title="Discard draft…" onPress={() => setConfirm('discard')} />
       </View> : <Button title="Create routine" onPress={() => open()} />}
       {routines.map((routine) => <View key={routine.id} style={styles.card}>

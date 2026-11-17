@@ -1,4 +1,4 @@
-import { Link, router } from 'expo-router';
+import { Link, router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,6 +19,7 @@ interface StartChoice {
 
 export default function HomeScreen() {
   const { training, workout, history, routines, isEnding, isAdapting, bodyweightSettings } = useTraining();
+  const { restored } = useLocalSearchParams<{ restored?: string }>();
   const busy = isEnding || isAdapting;
   const now = useLocalDate();
   const activity = training.getWeeklyActivity(now);
@@ -96,6 +97,7 @@ export default function HomeScreen() {
             <Link href="./settings" style={styles.text}>Settings</Link>
             <Text accessibilityRole="header" style={styles.title}>{greeting}</Text>
           </View>
+          {restored === '1' && <Text accessibilityLiveRegion="polite" style={styles.text}>Backup restored successfully.</Text>}
           {!bodyweightSettings.setupComplete && <BodyweightSettings setup />}
           {workout ? <View style={[styles.card, localStyles.hero]}>
             <Text style={localStyles.eyebrow}>IN PROGRESS</Text>

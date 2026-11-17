@@ -17,6 +17,22 @@ export type RoutineDraftSet = { type: 'normal' | 'warmup' | 'drop'; min: string;
 export type RoutineDraftExercise = Omit<Routine['exercises'][number], 'sets' | 'restSeconds'> & { rest: string; sets: RoutineDraftSet[] };
 export type RoutineDraft = { id: string; title: string; exercises: RoutineDraftExercise[] };
 
+/** Decode only the editor shape; unfinished user-entered text is intentionally allowed. */
+export function decodeRoutineDraft(data: string): RoutineDraft {
+  const value: unknown = JSON.parse(data);
+  const record = (x: unknown): x is Record<string, unknown> => x !== null && typeof x === 'object' && !Array.isArray(x);
+  const text = (x: unknown) => typeof x === 'string';
+  if (!record(value) || !text(value.id) || !text(value.title) || !Array.isArray(value.exercises) || value.exercises.some(e =>
+    !record(e) || !text(e.exerciseId) || !text(e.name) || !text(e.loadConvention) || !text(e.rest) ||
+    (e.equipmentCategory !== undefined && !text(e.equipmentCategory)) ||
+    (e.bodyweightFraction !== undefined && e.bodyweightFraction !== null && (typeof e.bodyweightFraction !== 'number' || !Number.isFinite(e.bodyweightFraction) || e.bodyweightFraction < 0 || e.bodyweightFraction > 1)) ||
+    (e.entryMode !== undefined && !['weighted', 'unilateral', 'bodyweight', 'assisted', 'unilateral-bodyweight', 'unilateral-assisted'].includes(e.entryMode as string)) ||
+    !Array.isArray(e.sets) || e.sets.some(set => !record(set) || !['normal', 'warmup', 'drop'].includes(set.type as string) || !text(set.min) || !text(set.max)))) {
+    throw new Error('The draft could not be opened.');
+  }
+  return value as unknown as RoutineDraft;
+}
+
 export class RoutineValidationError extends Error {
   constructor() { super('Add a name and exercise, and enter valid rep ranges and rest seconds (1–86400).'); }
 }

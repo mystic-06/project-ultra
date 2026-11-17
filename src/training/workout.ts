@@ -1,8 +1,10 @@
 import { catalogueExercise, searchExercises, bodyParts, entryModes, exerciseDefinition, isUnilateral, isBodyweight, isAssisted, type CustomExercise, type CatalogueExercise, type EntryMode } from './catalogue';
 import { changeWorkout, persistWorkoutStructure, type WorkoutChange } from './workout-changes';
 import type { TrainingDatabase } from './database';
+import { backupColumns, validateBackup, type BackupTable, type BackupV1 } from './backup-schema';
 import { migrate } from './migrations';
 import { routineFromDraft, upperStarter, validateRoutine, type Routine } from './routines';
+export type { BackupV1 } from './backup-schema';
 
 export type LoadUnit = 'kg' | 'lb';
 
@@ -93,14 +95,9 @@ export interface TrainingSnapshot {
 
 export interface WeeklyActivity { startedAt: number; endsAt: number; completedCount: number }
 
-export interface BackupV1 {
-  version: 1;
-  data: Record<BackupTable, Record<string, string | number | null>[]>;
-}
-type BackupTable = 'workouts' | 'workout_exercises' | 'workout_sets' | 'equipment_setups' | 'equipment_last_selection' | 'custom_equipment_last_selection' | 'rest_settings' | 'routines' | 'routine_seed' | 'routine_draft' | 'load_settings' | 'bodyweight_settings' | 'exercise_fractions' | 'custom_exercises' | 'custom_draft';
-
 export interface Training {
   exportBackup(): Promise<BackupV1>;
+  restoreBackup(backup: unknown): Promise<void>;
   beginCustomDraft(data: string): Promise<string>;
   saveCustomDraft(data: string, lease: string): Promise<void>;
   discardCustomDraft(lease: string): Promise<void>;
@@ -206,6 +203,7 @@ class TrainingModule implements Training {
   private listeners = new Set<() => void>();
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private restoring = false;
   private closing?: Promise<void>;
   private retryIntent = new Map<string, boolean | undefined>();
   private invalidatedChecks = new Set<string>();
@@ -242,6 +240,7 @@ class TrainingModule implements Training {
     this.customDraft = draft?.data ?? null;
   }
   beginCustomDraft(data: string): Promise<string> {
+    if (this.restoring) return Promise.reject(new Error('Restore is in progress.'));
     if (this.customLease || (this.customDraft !== null && this.customDraft !== data)) return Promise.reject(new Error('Another custom draft is open.'));
     let id: string;
     try { id = JSON.parse(data).id; if (typeof id !== 'string' || !id.startsWith('custom-')) throw new Error(); } catch { return Promise.reject(new Error('Invalid custom draft.')); }
@@ -370,7 +369,7 @@ class TrainingModule implements Training {
     return this.updateBodyweightExercise(exerciseId, undefined, fraction);
   }
   private updateBodyweightExercise(exerciseId: string, bodyweight: string | null | undefined, fraction: number | null | undefined, enteredUnit?: LoadUnit): Promise<void> {
-    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
     this.isAdapting = true; this.publish();
     return this.enqueue(async () => {
       const exercise = this.workout?.exercises.find((item) => item.id === exerciseId);
@@ -423,7 +422,7 @@ class TrainingModule implements Training {
 
   setLoadUnit(unit: LoadUnit): Promise<void> {
     if (unit !== 'kg' && unit !== 'lb') return Promise.reject(new Error('Invalid load unit.'));
-    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
     const rows = this.workout?.exercises.flatMap((exercise) => exercise.sets) ?? [];
     if (rows.some((row) => !validDisplayedLoad(row.load, row.originalLoad, row.loadUnit, this.loadUnit, this.invalidMeasurements.get(row.id)?.has('load')) || !validDisplayedLoad(row.assistance, row.originalAssistance, row.assistanceUnit, this.loadUnit, this.invalidMeasurements.get(row.id)?.has('assistance')))) return Promise.reject(new Error('Complete or clear the unfinished load before changing units.'));
     this.isAdapting = true; this.publish();
@@ -520,37 +519,71 @@ class TrainingModule implements Training {
         ...exercise, sets: exercise.sets.map((set) => ({ ...set, previous: previous.get(set.id) })),
       })),
     } : null };
-    this.listeners.forEach((listener) => listener());
+    // A subscriber cannot change whether an already committed operation succeeded.
+    this.listeners.forEach((listener) => { try { listener(); } catch { /* Notify other subscribers. */ } });
   }
 
   exportBackup(): Promise<BackupV1> {
     return this.enqueue(async () => {
       // Fixed version-one projection: future database migrations cannot silently change the file format.
-      const queries: Record<BackupTable, string> = {
-        workouts: 'SELECT id, routine_id, title, started_at, active, completed_at, bodyweight, bodyweight_unit FROM workouts ORDER BY id',
-        workout_exercises: 'SELECT id, workout_id, exercise_id, name, load_convention, position, entry_mode, equipment_setup_id, rest_seconds, bodyweight, bodyweight_unit, bodyweight_fraction, equipment_category FROM workout_exercises ORDER BY id',
-        workout_sets: 'SELECT id, workout_exercise_id, position, type, target_min, target_max, load, load_unit, reps, reps_left, reps_right, rpe, performed, equipment_setup_id, bodyweight, bodyweight_unit, bodyweight_fraction, bodyweight_load, assistance, assistance_unit FROM workout_sets ORDER BY id',
-        equipment_setups: 'SELECT id, label, gym, ratio, archived FROM equipment_setups ORDER BY rowid',
-        equipment_last_selection: 'SELECT exercise_id, setup_id FROM equipment_last_selection ORDER BY exercise_id',
-        custom_equipment_last_selection: 'SELECT exercise_id, equipment_category, setup_id FROM custom_equipment_last_selection ORDER BY exercise_id, equipment_category',
-        rest_settings: 'SELECT id, automatic, default_seconds FROM rest_settings',
-        routines: 'SELECT id, data FROM routines ORDER BY rowid',
-        routine_seed: 'SELECT id FROM routine_seed',
-        routine_draft: 'SELECT id, data FROM routine_draft',
-        load_settings: 'SELECT id, unit FROM load_settings',
-        bodyweight_settings: 'SELECT id, bodyweight, bodyweight_unit, writeback, setup_complete FROM bodyweight_settings',
-        exercise_fractions: 'SELECT exercise_id, fraction FROM exercise_fractions ORDER BY exercise_id',
-        custom_exercises: 'SELECT id, data FROM custom_exercises ORDER BY rowid',
-        custom_draft: 'SELECT id, data FROM custom_draft',
+      const order: Partial<Record<BackupTable, string>> = {
+        workouts: 'id', workout_exercises: 'id', workout_sets: 'id', equipment_setups: 'rowid',
+        equipment_last_selection: 'exercise_id', custom_equipment_last_selection: 'exercise_id, equipment_category',
+        routines: 'rowid', exercise_fractions: 'exercise_id', custom_exercises: 'rowid',
       };
       const data = {} as BackupV1['data'];
-      for (const table of Object.keys(queries) as BackupTable[]) data[table] = await this.database.all(queries[table]);
+      for (const table of Object.keys(backupColumns) as BackupTable[]) {
+        const columns = backupColumns[table].split(' ').join(', ');
+        data[table] = await this.database.all(`SELECT ${columns} FROM ${table}${order[table] ? ` ORDER BY ${order[table]}` : ''}`);
+      }
       return { version: 1, data };
     });
   }
 
+  restoreBackup(input: unknown): Promise<void> {
+    // Copy immediately so callers cannot mutate a file while it waits on the queue.
+    let backup: BackupV1;
+    try {
+      const source = validateBackup(input);
+      const data = {} as BackupV1['data'];
+      for (const table of Object.keys(backupColumns) as BackupTable[]) {
+        const columns = backupColumns[table].split(' ');
+        data[table] = source.data[table].map(row => Object.fromEntries(columns.map(column => [column, row[column]])));
+      }
+      backup = validateBackup({ version: 1, data });
+    } catch { return Promise.reject(new Error('Invalid or unsupported backup.')); }
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current operation.'));
+    const result = this.enqueue(async () => {
+      const staged = new TrainingModule(this.database, this.now);
+      await this.transaction(async () => {
+        const remove: BackupTable[] = ['workout_sets', 'workout_exercises', 'workouts', 'equipment_last_selection', 'custom_equipment_last_selection', 'equipment_setups', 'rest_settings', 'routines', 'routine_seed', 'routine_draft', 'load_settings', 'bodyweight_settings', 'exercise_fractions', 'custom_exercises', 'custom_draft'];
+        for (const table of remove) await this.database.run(`DELETE FROM ${table}`, []);
+        const insert: BackupTable[] = ['equipment_setups', 'workouts', 'workout_exercises', 'workout_sets', 'equipment_last_selection', 'custom_equipment_last_selection', 'rest_settings', 'routines', 'routine_seed', 'routine_draft', 'load_settings', 'bodyweight_settings', 'exercise_fractions', 'custom_exercises', 'custom_draft'];
+        for (const table of insert) {
+          const columns = backupColumns[table].split(' ');
+          const sql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
+          for (const row of backup.data[table]) await this.database.run(sql, columns.map(column => row[column]));
+        }
+        await staged.loadCustom(); await staged.load(); await staged.loadEquipment(); await staged.loadRoutines();
+        staged.history = await staged.readHistory();
+        staged.previousByPair = await staged.readPreviousProjection(staged.workout);
+        // Materialize all derived state while rollback is still possible.
+        staged.publish();
+      });
+      this.workout = staged.workout; this.loadUnit = staged.loadUnit; this.restSettings = staged.restSettings; this.restDeadline = null;
+      this.bodyweightSettings = staged.bodyweightSettings; this.equipmentSetups = staged.equipmentSetups; this.customExercises = staged.customExercises; this.customDraft = staged.customDraft;
+      this.routines = staged.routines; this.routineDraft = staged.routineDraft; this.history = staged.history; this.previousByPair = staged.previousByPair;
+      this.previousGeneration++; this.customLease = null; this.customLeaseId = null;
+      this.invalidMeasurements.clear(); this.retryIntent.clear(); this.invalidatedChecks.clear(); this.uncheckRevision.clear(); this.pendingChecks.clear(); this.pendingUnchecks.clear();
+      this.publish();
+    });
+    this.restoring = true;
+    return result.finally(() => { this.restoring = false; });
+  }
+
   private enqueue<T>(action: () => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new Error('Training storage is closed.'));
+    if (this.restoring) return Promise.reject(new Error('Restore is in progress.'));
     const result = this.tail.then(action);
     this.tail = result.catch(() => {});
     return result;
@@ -713,7 +746,7 @@ class TrainingModule implements Training {
   }
 
   private endWorkout(expectedWorkoutId: string, discard: boolean): Promise<void> {
-    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('A workout is already being saved.'));
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.reject(new Error('A workout is already being saved.'));
     this.isEnding = true;
     this.publish();
     return this.enqueue(async () => {
@@ -779,7 +812,7 @@ class TrainingModule implements Training {
   }
 
   selectEquipmentSetup(exerciseId: string, setupId: string | null): Promise<void> {
-    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
     this.isAdapting = true; this.publish();
     return this.enqueue(async () => {
       const exercise = this.workout?.exercises.find((item) => item.id === exerciseId);
@@ -803,7 +836,7 @@ class TrainingModule implements Training {
   }
 
   correctSetEquipment(setId: string, setupId: string | null): Promise<void> {
-    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change.'));
     this.isAdapting = true; this.publish();
     return this.enqueue(async () => {
       const exercise = this.workout?.exercises.find((item) => item.sets.some((set) => set.id === setId));
@@ -842,7 +875,7 @@ class TrainingModule implements Training {
   }
 
   adaptWorkout(expectedWorkoutId: string, change: WorkoutChange): Promise<void> {
-    if (this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change to finish.'));
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.reject(new Error('Wait for the current workout change to finish.'));
     this.isAdapting = true;
     this.publish();
     return this.enqueue(async () => {
@@ -879,7 +912,7 @@ class TrainingModule implements Training {
   }
 
   start(routine: Routine = { id: 'unplanned', title: 'Workout', exercises: [] }): Promise<boolean> {
-    if (this.isEnding || this.isAdapting) return Promise.resolve(false);
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.resolve(false);
     return this.enqueue(async () => {
       if (this.workout) return false;
       const result = await this.transaction(async () => { const workout = await this.insertWorkout(routine); return { workout, projection: await this.readPreviousProjection(workout) }; });
@@ -892,7 +925,7 @@ class TrainingModule implements Training {
 
   /** Caller must obtain explicit discard confirmation for this exact active workout. */
   replaceActiveWorkout(routine: Routine, expectedWorkoutId: string): Promise<boolean> {
-    if (this.isEnding || this.isAdapting) return Promise.resolve(false);
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.resolve(false);
     return this.enqueue(async () => {
       if (this.workout?.id !== expectedWorkoutId) {
         throw new Error('The active workout changed. Resume it before trying again.');
@@ -955,7 +988,7 @@ class TrainingModule implements Training {
   }
 
   editSet(id: string, patch: Partial<Pick<SetEntry, 'load' | 'assistance' | 'reps' | 'repsLeft' | 'repsRight' | 'rpe' | 'type'>>) {
-    if (this.isEnding || this.isAdapting) return Promise.resolve(false);
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.resolve(false);
     const row = this.row(id);
     if (!row) return Promise.resolve(false);
     if (!this.supportsEntry(row)) return Promise.resolve(false);
@@ -983,7 +1016,7 @@ class TrainingModule implements Training {
   }
 
   copyPrevious(id: string, overwrite: boolean, expected?: { reference: string; revision: number }) {
-    if (this.isEnding || this.isAdapting) return Promise.resolve(false);
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.resolve(false);
     const row = this.row(id);
     const previous = this.previousResults().get(id);
     if (!row || !previous || !this.supportsEntry(row)) return Promise.resolve(false);
@@ -1007,13 +1040,13 @@ class TrainingModule implements Training {
   }
 
   setPerformed(id: string, performed: boolean) {
-    if (this.isEnding || this.isAdapting) return Promise.resolve(false);
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.resolve(false);
     const row = this.row(id);
     return row ? this.save(row, performed) : Promise.resolve(false);
   }
 
   retrySet(id: string) {
-    if (this.isEnding || this.isAdapting) return Promise.resolve(false);
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.resolve(false);
     const row = this.row(id);
     return row ? this.save(row, this.retryIntent.get(id)) : Promise.resolve(false);
   }
@@ -1025,7 +1058,7 @@ class TrainingModule implements Training {
   }
 
   blurSet(id: string) {
-    if (this.isEnding || this.isAdapting) return Promise.resolve(false);
+    if (this.restoring || this.isEnding || this.isAdapting) return Promise.resolve(false);
     const row = this.row(id);
     if (!row) return Promise.resolve(false);
     if (!inspectInput(row, this.entryMode(row), this.loadUnit, this.invalidMeasurements.get(row.id)).complete && (row.performed || this.pendingChecks.has(id))) return this.save(row, false);

@@ -10,7 +10,7 @@ import { WorkoutSaveFeedback } from './save-feedback';
 export function ResumeWorkoutBar() {
   const { workout } = useTraining();
   const pathname = usePathname();
-  if (!workout || pathname === '/' || pathname === '/workout') return null;
+  if (!workout || pathname === '/' || pathname === '/workout' || pathname === '/settings') return null;
 
   return <SafeAreaView edges={['bottom', 'left', 'right']} style={styles.bar}>
     <Link href="/workout" asChild>

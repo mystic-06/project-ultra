@@ -1,5 +1,7 @@
-import { useRef, useState } from 'react';
-import { usePreventRemove } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { router, usePreventRemove } from 'expo-router';
+import type { BackupV1 } from '@/training/backup-schema';
+import { pickBackupFile } from '@/training/pick-backup';
 import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BodyweightSettings } from '@/components/training/bodyweight-settings';
@@ -9,14 +11,40 @@ import { exportBackupFile } from '@/training/export-backup';
 
 export default function SettingsScreen() {
   const { training, restSettings, loadUnit } = useTraining();
-  const [exporting, setExporting] = useState(false);
+  const [operation, setOperation] = useState<'select' | 'export' | 'restore' | null>(null);
+  const operationLock = useRef(false);
+  const restoredLock = useRef(false);
   const [backupMessage, setBackupMessage] = useState('');
-  const exportLock = useRef(false);
-  usePreventRemove(exporting, () => setBackupMessage('Please wait for the export to finish.'));
+  const [selectedBackup, setSelectedBackup] = useState<BackupV1 | null>(null);
+  const [restoreSucceeded, setRestoreSucceeded] = useState(false);
+  const [restoreMessage, setRestoreMessage] = useState('');
+  useEffect(() => { if (restoreSucceeded && !operation) router.dismissTo({ pathname: '/', params: { restored: '1' } }); }, [restoreSucceeded, operation]);
+  usePreventRemove(operation !== null, () => setBackupMessage('Please wait for the backup operation to finish.'));
+  function beginOperation(next: 'select' | 'export' | 'restore') {
+    if (operationLock.current || restoredLock.current) return false;
+    operationLock.current = true; setOperation(next); return true;
+  }
+  function endOperation() { operationLock.current = false; setOperation(null); }
+  async function pickBackup() {
+    if (!beginOperation('select')) return;
+    setRestoreMessage('');
+    try {
+      const result = await pickBackupFile();
+      if (result.status === 'cancelled') setRestoreMessage('Backup selection cancelled.');
+      else if (result.status === 'failed') setRestoreMessage('Could not read a valid, supported backup. Current data was not changed.');
+      else setSelectedBackup(result.backup);
+    } finally { endOperation(); }
+  }
+  async function restoreBackup() {
+    if (!selectedBackup || !beginOperation('restore')) return;
+    setRestoreMessage('');
+    try { await training.restoreBackup(selectedBackup); restoredLock.current = true; setSelectedBackup(null); setRestoreSucceeded(true); }
+    catch { setRestoreMessage('Restore failed. Current data was not changed.'); }
+    finally { endOperation(); }
+  }
   async function exportBackup() {
-    if (exportLock.current) return;
-    exportLock.current = true;
-    setExporting(true); setBackupMessage('');
+    if (!beginOperation('export')) return;
+    setBackupMessage('');
     try {
       const result = await exportBackupFile(training);
       const messages = {
@@ -27,8 +55,9 @@ export default function SettingsScreen() {
         busy: 'Another backup export is in progress.',
       };
       setBackupMessage(messages[result]);
-    } finally { exportLock.current = false; setExporting(false); }
+    } finally { endOperation(); }
   }
+  const busy = operation !== null || restoreSucceeded;
   const [unitError, setUnitError] = useState('');
   const [seconds, setSeconds] = useState(String(restSettings.defaultSeconds));
   const [error, setError] = useState('');
@@ -42,9 +71,20 @@ export default function SettingsScreen() {
       <View style={pulseStyles.card}>
         <Text style={pulseStyles.heading}>Backup</Text>
         <Text style={pulseStyles.muted}>Save a copy of your training data to a folder you choose.</Text>
-        {Platform.OS === 'android' ? <Pressable accessibilityRole="button" accessibilityState={{ disabled: exporting }} disabled={exporting} style={pulseStyles.button} onPress={() => void exportBackup()}><Text style={pulseStyles.buttonText}>{exporting ? 'Exporting…' : 'Export backup'}</Text></Pressable> : <Text style={pulseStyles.muted}>Backup export is available on Android.</Text>}
-        {backupMessage ? <Text accessibilityLiveRegion="polite" style={pulseStyles.muted}>{backupMessage}</Text> : null}
+        {Platform.OS === 'android' ? <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy} style={pulseStyles.button} onPress={() => void exportBackup()}><Text style={pulseStyles.buttonText}>{operation === 'export' ? 'Exporting…' : 'Export backup'}</Text></Pressable> : <Text style={pulseStyles.muted}>Backup export is available on Android.</Text>}
+        {!selectedBackup && backupMessage ? <Text accessibilityLiveRegion="polite" style={pulseStyles.muted}>{backupMessage}</Text> : null}
+        {Platform.OS === 'android' && !selectedBackup ? <Pressable accessibilityRole="button" disabled={busy} style={pulseStyles.button} onPress={() => void pickBackup()}><Text style={pulseStyles.buttonText}>Select backup to restore</Text></Pressable> : null}
+        {selectedBackup ? <View style={pulseStyles.card}>
+          <Text style={pulseStyles.heading}>Replace current data?</Text>
+          <Text style={pulseStyles.text}>Restoring replaces your current training, history, settings and saved drafts. Export a copy first if you want to keep them.</Text>
+          <Pressable accessibilityRole="button" disabled={busy} style={pulseStyles.button} onPress={() => void exportBackup()}><Text style={pulseStyles.buttonText}>Export current data first</Text></Pressable>
+          {backupMessage ? <Text accessibilityLiveRegion="polite" style={pulseStyles.muted}>{backupMessage}</Text> : null}
+          <Pressable accessibilityRole="button" disabled={busy} style={pulseStyles.button} onPress={() => void restoreBackup()}><Text style={pulseStyles.buttonText}>{operation === 'restore' ? 'Restoring…' : 'Restore and replace data'}</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={busy} style={pulseStyles.button} onPress={() => { setSelectedBackup(null); setRestoreMessage('Restore cancelled.'); }}><Text style={pulseStyles.buttonText}>Cancel</Text></Pressable>
+        </View> : null}
+        {restoreMessage ? <Text accessibilityLiveRegion="polite" style={pulseStyles.muted}>{restoreMessage}</Text> : null}
       </View>
+      <View pointerEvents={busy ? 'none' : 'auto'} accessibilityElementsHidden={busy} importantForAccessibility={busy ? 'no-hide-descendants' : 'auto'}>
       <BodyweightSettings />
       <View style={pulseStyles.card}>
         <Text style={pulseStyles.heading}>Load unit</Text>
@@ -64,6 +104,7 @@ export default function SettingsScreen() {
         <Pressable accessibilityRole="button" style={pulseStyles.button} onPress={() => void save(restSettings.automatic, Number(seconds))}><Text style={pulseStyles.buttonText}>Save duration</Text></Pressable>
         <Text style={pulseStyles.muted}>Routine exercises can override this duration. Manual rest is set in your workout.</Text>
         {error ? <Text accessibilityLiveRegion="polite" style={pulseStyles.error}>{error}</Text> : <Text accessibilityLiveRegion="polite" style={pulseStyles.muted}>{message}</Text>}
+      </View>
       </View>
     </ScrollView>
   </SafeAreaView>;
