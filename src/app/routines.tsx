@@ -2,6 +2,8 @@ import { createContext, useContext, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { searchExercises } from '@/training/catalogue';
+import { CustomCatalogue } from '@/components/training/custom-catalogue';
 import { pulse, pulseStyles as styles } from '@/components/training/pulse';
 import { useTraining } from '@/training/provider';
 import { RoutineValidationError, type Routine, type RoutineDraft as Draft, type RoutineDraftExercise as DraftExercise, type RoutineDraftSet as DraftSet } from '@/training/routines';
@@ -23,7 +25,7 @@ function Input({ label, value, onChange, numeric = false, disabled = false }: { 
   return <View style={local.field}><Text style={styles.muted}>{label}</Text><TextInput editable={!disabled} accessibilityLabel={label} value={value} onChangeText={(next) => { if (!lock.current) onChange(next); }} keyboardType={numeric ? 'number-pad' : 'default'} style={local.input} /></View>;
 }
 export default function RoutinesScreen() {
-  const { training, routines, routineDraft } = useTraining();
+  const { training, customExercises, routines, routineDraft } = useTraining();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [query, setQuery] = useState('');
   const [selecting, setSelecting] = useState(false);
@@ -104,7 +106,7 @@ export default function RoutinesScreen() {
             <Button title="Add set" onPress={() => changeExercise(i, (e) => ({ ...e, sets: [...e.sets, newSet()] }))} />
           </View>)}
           <Button title={selecting ? 'Close exercise search' : 'Add exercise'} onPress={() => setSelecting(!selecting)} />
-          {selecting && <View style={styles.card}><Input disabled={busy} label="Search exercises" value={query} onChange={setQuery} />{training.searchExercises(query).map((exercise) => <Button key={exercise.id} title={exercise.name} onPress={() => { update({ ...draft, exercises: [...draft.exercises, { exerciseId: exercise.id, name: exercise.name, loadConvention: exercise.loadConvention, entryMode: exercise.entryMode, rest: '', sets: [newSet()] }] }); setSelecting(false); setQuery(''); }} />)}</View>}
+          {selecting && <View style={styles.card}><CustomCatalogue onSaved={(item) => setQuery(item.name)} /><Input disabled={busy} label="Search exercises" value={query} onChange={setQuery} />{searchExercises(query, customExercises).map((exercise) => <Button key={exercise.id} title={exercise.name} onPress={() => { try { const current = training.getAvailableExercise(exercise.id); update({ ...draft, exercises: [...draft.exercises, { exerciseId: current.id, name: current.name, loadConvention: current.loadConvention, equipmentCategory: current.equipment, bodyweightFraction: 'fraction' in current ? current.fraction : undefined, entryMode: current.entryMode, rest: '', sets: [newSet()] }] }); setSelecting(false); setQuery(''); } catch { setError('This exercise is no longer available. Choose another.'); } }} />)}</View>}
           <Button title={busy ? 'Saving…' : 'Save routine'} onPress={() => void save()} />
           <Button title="Cancel" onPress={() => setConfirm('discard')} />
         </>}

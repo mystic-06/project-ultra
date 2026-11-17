@@ -104,6 +104,10 @@ const migrations = [
   CREATE INDEX previous_setup_lookup ON workout_sets(workout_exercise_id, equipment_setup_id);`,
   `ALTER TABLE workout_sets ADD COLUMN assistance TEXT;
   ALTER TABLE workout_sets ADD COLUMN assistance_unit TEXT NOT NULL DEFAULT 'kg' CHECK(assistance_unit IN ('kg', 'lb'));`,
+  `CREATE TABLE custom_exercises (id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL);
+  CREATE TABLE custom_draft (id INTEGER PRIMARY KEY CHECK(id = 1), data TEXT NOT NULL);
+  ALTER TABLE workout_exercises ADD COLUMN equipment_category TEXT;`,
+  `CREATE TABLE custom_equipment_last_selection (exercise_id TEXT NOT NULL, equipment_category TEXT NOT NULL, setup_id TEXT REFERENCES equipment_setups(id), PRIMARY KEY(exercise_id, equipment_category));`,
 ];
 
 export async function migrate(database: TrainingDatabase) {

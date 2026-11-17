@@ -1,4 +1,10 @@
-export type EntryMode = 'weighted' | 'unilateral' | 'bodyweight' | 'assisted';
+export type EntryMode = 'weighted' | 'unilateral' | 'bodyweight' | 'assisted' | 'unilateral-bodyweight' | 'unilateral-assisted';
+export const entryModes: EntryMode[] = ['weighted', 'unilateral', 'bodyweight', 'assisted', 'unilateral-bodyweight', 'unilateral-assisted'];
+export const isUnilateral = (mode: EntryMode) => mode === 'unilateral' || mode.startsWith('unilateral-');
+export const isBodyweight = (mode: EntryMode) => mode === 'bodyweight' || mode === 'unilateral-bodyweight';
+export const isAssisted = (mode: EntryMode) => mode === 'assisted' || mode === 'unilateral-assisted';
+export const bodyParts = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'forearms', 'abs', 'glutes', 'quads', 'hamstrings', 'calves', 'full body'] as const;
+export interface CustomExercise extends CatalogueExercise { bodyParts: string[]; fraction: number | null; archived: boolean }
 export interface CatalogueExercise {
   id: string; name: string; equipment: string; entryMode: EntryMode; loadConvention: string;
   sourceId: string | null; aliases: string[];
@@ -230,16 +236,20 @@ const catalogue: CatalogueExercise[] = [
   }
 ];
 
-export function searchExercises(query = ''): CatalogueExercise[] {
+export function searchExercises(query = '', custom: CustomExercise[] = []): CatalogueExercise[] {
   const words = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  return catalogue.filter((exercise) => {
-    const text = [exercise.name, exercise.equipment, ...exercise.aliases].join(' ').toLowerCase();
+  return [...catalogue, ...custom.filter((item) => !item.archived)].filter((exercise) => {
+    const text = [exercise.name, exercise.equipment, ...exercise.aliases, ...('bodyParts' in exercise ? (exercise as CustomExercise).bodyParts : [])].join(' ').toLowerCase();
     return words.every((word) => text.includes(word));
-  }).map((exercise) => ({ ...exercise, aliases: [...exercise.aliases] }));
+  }).map((exercise) => ({ ...exercise, aliases: [...exercise.aliases], ...('bodyParts' in exercise ? { bodyParts: [...(exercise as CustomExercise).bodyParts] } : {}) }));
 }
 
 export function catalogueExercise(id: string): CatalogueExercise {
   const exercise = catalogue.find((item) => item.id === id);
   if (!exercise) throw new Error('Exercise not found in the offline catalogue.');
   return { ...exercise, aliases: [...exercise.aliases] };
+}
+
+export function exerciseDefinition(item: CatalogueExercise): string {
+  return JSON.stringify([item.id, item.name, item.equipment, item.entryMode, item.loadConvention, 'fraction' in item ? item.fraction : null, 'bodyParts' in item ? item.bodyParts : null]);
 }

@@ -4,7 +4,7 @@ import { useState, useRef, type ComponentRef } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { catalogueExercise } from '@/training/catalogue';
+import { entryModes, isUnilateral, isBodyweight, isAssisted } from '@/training/catalogue';
 import { EquipmentSelector } from '@/components/training/equipment-selector';
 import { RestTimer } from '@/components/training/rest-timer';
 import { pulse, pulseStyles } from '@/components/training/pulse';
@@ -52,26 +52,26 @@ export default function WorkoutScreen() {
             {workout.exercises.length === 0 && <Text style={pulseStyles.text}>Your workout is empty. Add an exercise to begin.</Text>}
             {workout.exercises.map((exercise, exerciseIndex) => <View key={exercise.id} style={styles.exercise}>
               <Text style={pulseStyles.heading}>{exercise.name}</Text>
-              <Text style={pulseStyles.muted}>{exercise.entryMode === 'assisted' ? 'Assistance' : exercise.loadConvention} · {loadUnit}</Text>
-              {['machine', 'cable'].includes(catalogueExercise(exercise.exerciseId).equipment) && <EquipmentSelector training={training} exercise={exercise} setups={equipmentSetups} disabled={busy} />}
+              <Text style={pulseStyles.muted}>{isAssisted(exercise.entryMode) ? 'Assistance' : exercise.loadConvention} · {loadUnit}</Text>
+              {['machine', 'cable'].includes(exercise.equipmentCategory) && <EquipmentSelector training={training} exercise={exercise} setups={equipmentSetups} disabled={busy} />}
               {managing && <EditActions>
                 <EditAction label={`Move ${exercise.name} up`} disabled={busy || exerciseIndex === 0} onPress={() => void apply({ type: 'move-exercise', exerciseId: exercise.id, direction: -1 })} />
                 <EditAction label={`Move ${exercise.name} down`} disabled={busy || exerciseIndex === workout.exercises.length - 1} onPress={() => void apply({ type: 'move-exercise', exerciseId: exercise.id, direction: 1 })} />
                 <EditAction label={`Replace ${exercise.name}`} disabled={busy} onPress={() => router.push({ pathname: '/exercises', params: { workoutId: workout.id, replaceId: exercise.id } })} />
                 <EditAction label={`Remove ${exercise.name}`} disabled={busy} onPress={() => setConfirmation({ label: `Remove ${exercise.name}`, change: { type: 'remove-exercise', exerciseId: exercise.id } })} />
               </EditActions>}
-              {exercise.entryMode === 'bodyweight' && <BodyweightDetails exercise={exercise} training={training} disabled={busy} loadUnit={loadUnit} />}
-              {!['weighted', 'unilateral', 'bodyweight', 'assisted'].includes(exercise.entryMode) && <Text style={pulseStyles.muted}>{exercise.entryMode} logging is not available yet. You can arrange this exercise and its sets.</Text>}
+              {isBodyweight(exercise.entryMode) && <BodyweightDetails exercise={exercise} training={training} disabled={busy} loadUnit={loadUnit} />}
+              {!entryModes.includes(exercise.entryMode) && <Text style={pulseStyles.muted}>{exercise.entryMode} logging is not available yet. You can arrange this exercise and its sets.</Text>}
               <View style={styles.row} accessibilityElementsHidden>
                 <Text style={[styles.columnLabel, styles.identity]}>Set</Text>
                 <Text style={[styles.columnLabel, styles.previous]}>Previous</Text>
-                <Text style={[styles.columnLabel, styles.input]}>{exercise.entryMode === 'bodyweight' ? `Added ${loadUnit}` : exercise.entryMode === 'assisted' ? `Assist ${loadUnit}` : loadUnit}</Text>
+                <Text style={[styles.columnLabel, styles.input]}>{isBodyweight(exercise.entryMode) ? `Added ${loadUnit}` : isAssisted(exercise.entryMode) ? `Assist ${loadUnit}` : loadUnit}</Text>
                 <Text style={[styles.columnLabel, styles.input]}>Reps</Text>
                 <Text style={[styles.columnLabel, styles.check]}>Check</Text>
               </View>
               {exercise.sets.map((set, index) => <View key={set.id}>
-                {['weighted', 'unilateral', 'bodyweight', 'assisted'].includes(exercise.entryMode)
-                  ? <SetRow bodyweight={exercise.entryMode === 'bodyweight'} assisted={exercise.entryMode === 'assisted'} unilateral={exercise.entryMode === 'unilateral'} set={set} index={index} exerciseName={exercise.name} training={training} loadUnit={loadUnit} disabled={busy} />
+                {entryModes.includes(exercise.entryMode)
+                  ? <SetRow bodyweight={isBodyweight(exercise.entryMode)} assisted={isAssisted(exercise.entryMode)} unilateral={isUnilateral(exercise.entryMode)} set={set} index={index} exerciseName={exercise.name} training={training} loadUnit={loadUnit} disabled={busy} />
                   : <Text style={pulseStyles.text}>Set {index + 1} · Not entered</Text>}
                 {managing && <EditActions>
                   <EditAction label={`Move set ${index + 1} up`} disabled={busy || index === 0} onPress={() => void apply({ type: 'move-set', exerciseId: exercise.id, setId: set.id, direction: -1 })} />
@@ -133,11 +133,11 @@ function SetRow({ set, index, exerciseName, training, loadUnit, disabled, unilat
     : durability;
   const previous = set.previous;
   const previousMeasurements = previous ? [
-    previous.entryMode === 'bodyweight' && previous.bodyweightLoad !== null ? `Bodyweight ${previous.bodyweightLoad} ${loadUnit}` : '',
-    previous.entryMode !== 'assisted' && previous.load !== '' ? `${previous.entryMode === 'bodyweight' ? 'Added ' : ''}${previous.load} ${loadUnit}${previous.entryMode !== 'bodyweight' ? ` (${previous.loadConvention})` : ''}` : '',
+    isBodyweight(previous.entryMode) && previous.bodyweightLoad !== null ? `Bodyweight ${previous.bodyweightLoad} ${loadUnit}` : '',
+    !isAssisted(previous.entryMode) && previous.load !== '' ? `${isBodyweight(previous.entryMode) ? 'Added ' : ''}${previous.load} ${loadUnit}${!isBodyweight(previous.entryMode) ? ` (${previous.loadConvention})` : ''}` : '',
     previous.assistance !== '' ? `Assistance ${formatAssistance(previous.assistance)} ${loadUnit}` : '',
   ].filter(Boolean).join(' · ') : '';
-  const previousReps = previous ? previous.entryMode === 'unilateral' ? `${previous.repsLeft || '–'}/${previous.repsRight || '–'}` : previous.reps : '';
+  const previousReps = previous ? isUnilateral(previous.entryMode) ? `${previous.repsLeft || '–'}/${previous.repsRight || '–'}` : previous.reps : '';
   const previousSummary = previous ? `${previousMeasurements ? `${previousMeasurements} × ` : ''}${previousReps} reps${previous.rpe ? ` @ ${previous.rpe}` : ''}` : '';
   return <View style={styles.set}>
     <Text style={styles.target}>{target}</Text>

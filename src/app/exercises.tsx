@@ -3,25 +3,26 @@ import { useState } from 'react';
 import { FlatList, Pressable, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CustomCatalogue } from '@/components/training/custom-catalogue';
 import { pulse, pulseStyles as styles } from '@/components/training/pulse';
 import { useTraining } from '@/training/provider';
-import type { CatalogueExercise } from '@/training/catalogue';
+import { exerciseDefinition, searchExercises, type CatalogueExercise } from '@/training/catalogue';
 
 export default function ExercisePicker() {
   const { workoutId, replaceId } = useLocalSearchParams<{ workoutId: string; replaceId?: string }>();
-  const { training, workout, isAdapting, isEnding } = useTraining();
+  const { training, customExercises, workout, isAdapting, isEnding } = useTraining();
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<CatalogueExercise | null>(null);
   const [error, setError] = useState<string | null>(null);
   const busy = isAdapting || isEnding;
-  const results = training.searchExercises(query);
+  const results = searchExercises(query, customExercises);
   const current = workout?.exercises.find((exercise) => exercise.id === replaceId);
 
   async function choose(item: CatalogueExercise) {
     setError(null);
     try {
       await training.adaptWorkout(workoutId, replaceId
-        ? { type: 'replace-exercise', exerciseId: replaceId, catalogueId: item.id }
+        ? { type: 'replace-exercise', exerciseId: replaceId, catalogueId: item.id, expectedDefinition: exerciseDefinition(item) }
         : { type: 'add-exercise', catalogueId: item.id });
       router.back();
     } catch {
@@ -32,6 +33,7 @@ export default function ExercisePicker() {
   return <SafeAreaView style={styles.screen} edges={['left', 'right', 'bottom']}>
     <FlatList data={results} keyExtractor={(exercise) => exercise.id} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}
       ListHeaderComponent={<View style={{ gap: 16 }}>
+        <CustomCatalogue onSaved={(item) => { setQuery(item.name); setSelected(null); setError(null); }} />
         <Text style={styles.title}>{replaceId ? 'Replace exercise' : 'Add exercise'}</Text>
         <Text style={styles.muted}>Search your offline catalogue. New exercises start with a blank set.</Text>
         <TextInput accessibilityLabel="Search exercises" value={query} onChangeText={(text) => { setQuery(text); setSelected(null); }}

@@ -1,10 +1,10 @@
 import type { TrainingDatabase } from './database';
-import { catalogueExercise } from './catalogue';
+import { isBodyweight, type CatalogueExercise } from './catalogue';
 import type { SetEntry, Workout } from './workout';
 
 export type WorkoutChange =
   | { type: 'add-exercise'; catalogueId: string }
-  | { type: 'replace-exercise'; exerciseId: string; catalogueId: string }
+  | { type: 'replace-exercise'; exerciseId: string; catalogueId: string; expectedDefinition?: string }
   | { type: 'remove-exercise'; exerciseId: string }
   | { type: 'move-exercise'; exerciseId: string; direction: -1 | 1 }
   | { type: 'add-set'; exerciseId: string }
@@ -17,9 +17,9 @@ function blankSet(id: string, template?: SetEntry): SetEntry {
 }
 
 function withExerciseBodyweight(set: SetEntry, exercise: Workout['exercises'][number]): SetEntry {
-  const bodyweight = exercise.entryMode === 'bodyweight' ? exercise.bodyweight : null;
-  const bodyweightFraction = exercise.entryMode === 'bodyweight' ? exercise.bodyweightFraction : null;
-  return { ...set, bodyweight, bodyweightUnit: exercise.entryMode === 'bodyweight' ? exercise.bodyweightUnit : 'kg', bodyweightFraction,
+  const bodyweight = isBodyweight(exercise.entryMode) ? exercise.bodyweight : null;
+  const bodyweightFraction = isBodyweight(exercise.entryMode) ? exercise.bodyweightFraction : null;
+  return { ...set, bodyweight, bodyweightUnit: isBodyweight(exercise.entryMode) ? exercise.bodyweightUnit : 'kg', bodyweightFraction,
     bodyweightLoad: bodyweight !== null && bodyweightFraction !== null ? Number(bodyweight) * bodyweightFraction : null };
 }
 
@@ -30,13 +30,13 @@ function move<T>(entries: T[], index: number, direction: -1 | 1) {
   [entries[index], entries[destination]] = [entries[destination], entries[index]];
 }
 
-export async function changeWorkout(workout: Workout, change: WorkoutChange, nextId: () => Promise<string>): Promise<Workout> {
+export async function changeWorkout(workout: Workout, change: WorkoutChange, nextId: () => Promise<string>, lookup: (id: string) => CatalogueExercise): Promise<Workout> {
   const exercises = workout.exercises.map((exercise) => ({ ...exercise, sets: [...exercise.sets] }));
   async function createExercise(catalogueId: string, templates?: SetEntry[]): Promise<Workout['exercises'][number]> {
-    const item = catalogueExercise(catalogueId);
+    const item = lookup(catalogueId);
     const sets: SetEntry[] = [];
     for (const template of templates ?? [undefined]) sets.push({ ...blankSet(await nextId(), template), bodyweight: null, bodyweightUnit: 'kg', bodyweightFraction: null, bodyweightLoad: null });
-    return { id: await nextId(), exerciseId: item.id, equipmentSetupId: null, name: item.name, loadConvention: item.loadConvention, entryMode: item.entryMode, bodyweight: null, bodyweightUnit: 'kg', bodyweightFraction: null, sets };
+    return { id: await nextId(), exerciseId: item.id, equipmentCategory: item.equipment, equipmentSetupId: null, name: item.name, loadConvention: item.loadConvention, entryMode: item.entryMode, bodyweight: null, bodyweightUnit: 'kg', bodyweightFraction: null, sets };
   }
   if (change.type === 'add-exercise') exercises.push(await createExercise(change.catalogueId));
   else {
@@ -75,8 +75,8 @@ export async function persistWorkoutStructure(database: TrainingDatabase, previo
     if (previous.exercises.some((entry) => entry.id === exercise.id)) {
       await database.run('UPDATE workout_exercises SET position = ? WHERE id = ?', [position, exercise.id]);
     } else {
-      await database.run('INSERT INTO workout_exercises(id, workout_id, exercise_id, name, load_convention, entry_mode, position, equipment_setup_id, bodyweight, bodyweight_unit, bodyweight_fraction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [exercise.id, next.id, exercise.exerciseId, exercise.name, exercise.loadConvention, exercise.entryMode, position, exercise.equipmentSetupId, exercise.bodyweight, exercise.bodyweightUnit, exercise.bodyweightFraction]);
+      await database.run('INSERT INTO workout_exercises(id, workout_id, exercise_id, name, load_convention, entry_mode, position, equipment_setup_id, bodyweight, bodyweight_unit, bodyweight_fraction, equipment_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [exercise.id, next.id, exercise.exerciseId, exercise.name, exercise.loadConvention, exercise.entryMode, position, exercise.equipmentSetupId, exercise.bodyweight, exercise.bodyweightUnit, exercise.bodyweightFraction, exercise.equipmentCategory]);
     }
     await database.run('UPDATE workout_sets SET position = -position - 1 WHERE workout_exercise_id = ?', [exercise.id]);
     const old = previous.exercises.find((entry) => entry.id === exercise.id);
